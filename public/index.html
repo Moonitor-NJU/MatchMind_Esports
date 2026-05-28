@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MatchMind Esports | 电竞赛程与 AI 晋级形势分析</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">M</div>
+          <div>
+            <h1>MatchMind Esports</h1>
+            <p>电竞赛程与晋级分析 Agent</p>
+          </div>
+        </div>
+        <label class="field-label" for="tournamentSelect">赛事</label>
+        <select id="tournamentSelect" class="select"></select>
+        <label class="field-label" for="providerSelect">分析模型</label>
+        <select id="providerSelect" class="select">
+          <option value="local">本地规则引擎</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="qwen">Qwen</option>
+          <option value="kimi">Kimi</option>
+          <option value="zhipu">智谱 GLM</option>
+        </select>
+        <nav class="nav">
+          <a href="#schedule">赛程</a>
+          <a href="#standings">积分榜</a>
+          <a href="#analysis">晋级分析</a>
+          <a href="#agent">AI 问答</a>
+        </nav>
+        <div class="source-box">
+          <span>数据源</span>
+          <p id="sourceText">加载中</p>
+        </div>
+      </aside>
+
+      <main class="content">
+        <section class="topbar">
+          <div>
+            <p class="eyebrow" id="gameLabel">League of Legends</p>
+            <h2 id="tournamentTitle">加载赛事中</h2>
+          </div>
+          <button id="refreshButton" class="icon-button" title="刷新分析">
+            <span>↻</span>
+          </button>
+        </section>
+
+        <section class="hero-band">
+          <div>
+            <p class="eyebrow">实时判断</p>
+            <h3 id="heroSummary">正在读取赛程和晋级规则。</h3>
+          </div>
+          <div class="hero-stats">
+            <div><strong id="liveCount">0</strong><span>进行中</span></div>
+            <div><strong id="keyCount">0</strong><span>关键战</span></div>
+            <div><strong id="advanceSlots">0</strong><span>晋级名额</span></div>
+          </div>
+        </section>
+
+        <section id="schedule" class="section">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Schedule</p>
+              <h3>近期赛程</h3>
+            </div>
+            <div class="segmented" id="scheduleFilter">
+              <button data-filter="all" class="active">全部</button>
+              <button data-filter="live">进行中</button>
+              <button data-filter="scheduled">未开始</button>
+              <button data-filter="finished">已结束</button>
+            </div>
+          </div>
+          <div id="matchList" class="match-list"></div>
+        </section>
+
+        <section id="standings" class="section">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Standings</p>
+              <h3>积分榜</h3>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>队伍</th>
+                  <th>赛区</th>
+                  <th>战绩</th>
+                  <th>小分</th>
+                  <th>剩余</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="standingsBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="analysis" class="section analysis-grid">
+          <div class="analysis-panel">
+            <div class="section-head compact">
+              <div>
+                <p class="eyebrow">AI Analysis</p>
+                <h3>晋级形势摘要</h3>
+              </div>
+            </div>
+            <div id="analysisText" class="analysis-text"></div>
+          </div>
+          <div class="analysis-panel">
+            <div class="section-head compact">
+              <div>
+                <p class="eyebrow">Impact</p>
+                <h3>关键比赛</h3>
+              </div>
+            </div>
+            <div id="keyMatches" class="key-list"></div>
+          </div>
+        </section>
+
+        <section class="section simulator">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">What If</p>
+              <h3>假设推演</h3>
+            </div>
+          </div>
+          <div class="simulator-controls">
+            <select id="scenarioMatch" class="light-select"></select>
+            <div class="score-buttons">
+              <button data-left="2" data-right="0">左 2:0</button>
+              <button data-left="2" data-right="1">左 2:1</button>
+              <button data-left="1" data-right="2">右 2:1</button>
+              <button data-left="0" data-right="2">右 2:0</button>
+            </div>
+          </div>
+          <div id="scenarioResult" class="scenario-result">选择一场未结束比赛，系统会重新计算假设结果下的排名和晋级形势。</div>
+        </section>
+
+        <section id="agent" class="section agent">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Agent</p>
+              <h3>问问晋级形势</h3>
+            </div>
+          </div>
+          <div id="chatLog" class="chat-log"></div>
+          <form id="chatForm" class="chat-form">
+            <input id="questionInput" autocomplete="off" placeholder="例如：T1 还能进前二吗？今晚哪场最值得看？">
+            <button type="submit">发送</button>
+          </form>
+          <div class="quick-questions">
+            <button data-question="现在整体晋级形势如何？">整体形势</button>
+            <button data-question="哪场比赛最关键？">关键比赛</button>
+            <button data-question="BLG 的晋级条件是什么？">BLG 条件</button>
+            <button data-question="TES 还有主动权吗？">TES 主动权</button>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

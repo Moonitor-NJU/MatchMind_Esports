@@ -1,0 +1,90 @@
+{
+  "tournaments": [
+    {
+      "id": "lol-global-qualifier-demo",
+      "name": "英雄联盟国际赛资格赛演示组",
+      "game": "League of Legends",
+      "region": "Global",
+      "stage": "瑞士轮前置小组",
+      "season": "2026 Demo",
+      "source": "课程演示数据，可替换为 PandaScore、Riot Esports 或 Liquipedia 数据源",
+      "rules": {
+        "format": "单循环 BO3",
+        "advanceSlots": 4,
+        "eliminationSlots": 2,
+        "tiebreakers": [
+          "胜场",
+          "小分净胜",
+          "小分胜场",
+          "直接交手",
+          "加赛"
+        ]
+      },
+      "teams": [
+        { "id": "blg", "name": "BLG", "region": "LPL", "color": "#0088ff" },
+        { "id": "tes", "name": "TES", "region": "LPL", "color": "#d93636" },
+        { "id": "t1", "name": "T1", "region": "LCK", "color": "#e21b2d" },
+        { "id": "geng", "name": "GEN", "region": "LCK", "color": "#b99a55" },
+        { "id": "g2", "name": "G2", "region": "LEC", "color": "#111111" },
+        { "id": "tl", "name": "TL", "region": "LCS", "color": "#2454ff" },
+        { "id": "fnc", "name": "FNC", "region": "LEC", "color": "#ff6500" },
+        { "id": "psg", "name": "PSG", "region": "PCS", "color": "#233b7a" }
+      ],
+      "matches": [
+        { "id": "m001", "startsAt": "2026-06-01T19:00:00+08:00", "status": "finished", "round": "R1", "bestOf": 3, "teams": ["blg", "tl"], "result": { "left": 2, "right": 0 } },
+        { "id": "m002", "startsAt": "2026-06-01T21:00:00+08:00", "status": "finished", "round": "R1", "bestOf": 3, "teams": ["t1", "fnc"], "result": { "left": 2, "right": 1 } },
+        { "id": "m003", "startsAt": "2026-06-02T19:00:00+08:00", "status": "finished", "round": "R1", "bestOf": 3, "teams": ["geng", "psg"], "result": { "left": 2, "right": 0 } },
+        { "id": "m004", "startsAt": "2026-06-02T21:00:00+08:00", "status": "finished", "round": "R1", "bestOf": 3, "teams": ["tes", "g2"], "result": { "left": 1, "right": 2 } },
+        { "id": "m005", "startsAt": "2026-06-03T19:00:00+08:00", "status": "finished", "round": "R2", "bestOf": 3, "teams": ["blg", "fnc"], "result": { "left": 2, "right": 1 } },
+        { "id": "m006", "startsAt": "2026-06-03T21:00:00+08:00", "status": "finished", "round": "R2", "bestOf": 3, "teams": ["t1", "tl"], "result": { "left": 2, "right": 0 } },
+        { "id": "m007", "startsAt": "2026-06-04T19:00:00+08:00", "status": "finished", "round": "R2", "bestOf": 3, "teams": ["geng", "g2"], "result": { "left": 1, "right": 2 } },
+        { "id": "m008", "startsAt": "2026-06-04T21:00:00+08:00", "status": "finished", "round": "R2", "bestOf": 3, "teams": ["tes", "psg"], "result": { "left": 2, "right": 0 } },
+        { "id": "m009", "startsAt": "2026-06-05T19:00:00+08:00", "status": "finished", "round": "R3", "bestOf": 3, "teams": ["blg", "g2"], "result": { "left": 2, "right": 1 } },
+        { "id": "m010", "startsAt": "2026-06-05T21:00:00+08:00", "status": "finished", "round": "R3", "bestOf": 3, "teams": ["t1", "psg"], "result": { "left": 2, "right": 0 } },
+        { "id": "m011", "startsAt": "2026-06-06T19:00:00+08:00", "status": "finished", "round": "R3", "bestOf": 3, "teams": ["geng", "fnc"], "result": { "left": 2, "right": 1 } },
+        { "id": "m012", "startsAt": "2026-06-06T21:00:00+08:00", "status": "finished", "round": "R3", "bestOf": 3, "teams": ["tes", "tl"], "result": { "left": 2, "right": 1 } },
+        { "id": "m013", "startsAt": "2026-06-07T19:00:00+08:00", "status": "finished", "round": "R4", "bestOf": 3, "teams": ["blg", "geng"], "result": { "left": 1, "right": 2 } },
+        { "id": "m014", "startsAt": "2026-06-07T21:00:00+08:00", "status": "finished", "round": "R4", "bestOf": 3, "teams": ["t1", "g2"], "result": { "left": 1, "right": 2 } },
+        { "id": "m015", "startsAt": "2026-06-08T19:00:00+08:00", "status": "finished", "round": "R4", "bestOf": 3, "teams": ["tes", "fnc"], "result": { "left": 2, "right": 0 } },
+        { "id": "m016", "startsAt": "2026-06-08T21:00:00+08:00", "status": "finished", "round": "R4", "bestOf": 3, "teams": ["tl", "psg"], "result": { "left": 2, "right": 1 } },
+        { "id": "m017", "startsAt": "2026-06-09T19:00:00+08:00", "status": "live", "round": "R5", "bestOf": 3, "teams": ["blg", "t1"], "result": null },
+        { "id": "m018", "startsAt": "2026-06-09T21:00:00+08:00", "status": "scheduled", "round": "R5", "bestOf": 3, "teams": ["geng", "tes"], "result": null },
+        { "id": "m019", "startsAt": "2026-06-10T19:00:00+08:00", "status": "scheduled", "round": "R5", "bestOf": 3, "teams": ["g2", "tl"], "result": null },
+        { "id": "m020", "startsAt": "2026-06-10T21:00:00+08:00", "status": "scheduled", "round": "R5", "bestOf": 3, "teams": ["fnc", "psg"], "result": null },
+        { "id": "m021", "startsAt": "2026-06-11T19:00:00+08:00", "status": "scheduled", "round": "R6", "bestOf": 3, "teams": ["blg", "tes"], "result": null },
+        { "id": "m022", "startsAt": "2026-06-11T21:00:00+08:00", "status": "scheduled", "round": "R6", "bestOf": 3, "teams": ["t1", "geng"], "result": null },
+        { "id": "m023", "startsAt": "2026-06-12T19:00:00+08:00", "status": "scheduled", "round": "R6", "bestOf": 3, "teams": ["g2", "fnc"], "result": null },
+        { "id": "m024", "startsAt": "2026-06-12T21:00:00+08:00", "status": "scheduled", "round": "R6", "bestOf": 3, "teams": ["tl", "psg"], "result": null }
+      ]
+    },
+    {
+      "id": "valorant-masters-demo",
+      "name": "无畏契约大师赛演示组",
+      "game": "Valorant",
+      "region": "Global",
+      "stage": "小组赛",
+      "season": "2026 Demo",
+      "source": "课程演示数据",
+      "rules": {
+        "format": "双循环 BO3",
+        "advanceSlots": 2,
+        "eliminationSlots": 1,
+        "tiebreakers": ["胜场", "地图净胜", "回合净胜"]
+      },
+      "teams": [
+        { "id": "edg", "name": "EDG", "region": "CN", "color": "#c8192e" },
+        { "id": "prx", "name": "PRX", "region": "Pacific", "color": "#f05a28" },
+        { "id": "fnatic", "name": "FNATIC", "region": "EMEA", "color": "#ff5900" },
+        { "id": "sen", "name": "SEN", "region": "Americas", "color": "#d92323" }
+      ],
+      "matches": [
+        { "id": "v001", "startsAt": "2026-06-03T18:00:00+08:00", "status": "finished", "round": "R1", "bestOf": 3, "teams": ["edg", "sen"], "result": { "left": 2, "right": 1 } },
+        { "id": "v002", "startsAt": "2026-06-03T21:00:00+08:00", "status": "finished", "round": "R1", "bestOf": 3, "teams": ["prx", "fnatic"], "result": { "left": 1, "right": 2 } },
+        { "id": "v003", "startsAt": "2026-06-05T18:00:00+08:00", "status": "finished", "round": "R2", "bestOf": 3, "teams": ["edg", "fnatic"], "result": { "left": 0, "right": 2 } },
+        { "id": "v004", "startsAt": "2026-06-05T21:00:00+08:00", "status": "finished", "round": "R2", "bestOf": 3, "teams": ["prx", "sen"], "result": { "left": 2, "right": 0 } },
+        { "id": "v005", "startsAt": "2026-06-08T18:00:00+08:00", "status": "scheduled", "round": "R3", "bestOf": 3, "teams": ["edg", "prx"], "result": null },
+        { "id": "v006", "startsAt": "2026-06-08T21:00:00+08:00", "status": "scheduled", "round": "R3", "bestOf": 3, "teams": ["fnatic", "sen"], "result": null }
+      ]
+    }
+  ]
+}

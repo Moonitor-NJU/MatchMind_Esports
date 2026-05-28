@@ -1,0 +1,22 @@
+{
+  "name": "matchmind-esports",
+  "version": "1.0.0",
+  "description": "Real-time esports schedule and qualification analysis agent.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "esports",
+    "schedule",
+    "agent",
+    "llm",
+    "league-of-legends"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

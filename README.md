@@ -87,6 +87,41 @@ KIMI_MODEL=moonshot-v1-8k
 ZHIPU_MODEL=glm-4-flash
 ```
 
+可以把变量写入项目根目录的 `.env` 文件，`node server.js` 启动时会自动读取。`.env` 已在 `.gitignore` 中忽略，不会被提交到 GitHub。
+
+## 实时赛事数据配置
+
+项目支持优先拉取实时赛事 API，并在接口不可用时自动回退到 `data/tournaments.json`。当前内置 PandaScore League of Legends 赛程适配器：
+
+```bash
+# auto 会优先尝试实时接口，失败则回退本地数据；local 只使用本地演示数据
+REALTIME_PROVIDER=auto
+
+# PandaScore API Token
+PANDASCORE_API_TOKEN=your_token
+
+# 可选：默认 lol，也可以改成 pandascore 支持的其他游戏路径
+PANDASCORE_GAME=lol
+
+# 可选：限制拉取某些联赛，多个 id 用英文逗号分隔
+PANDASCORE_LEAGUE_IDS=4197,297
+
+# 可选：拉取最近/未来窗口
+PANDASCORE_LOOKBACK_DAYS=14
+PANDASCORE_LOOKAHEAD_DAYS=30
+PANDASCORE_MATCH_LIMIT=50
+```
+
+推荐 `.env` 示例：
+
+```bash
+DEEPSEEK_API_KEY=sk-你的DeepSeekKey
+REALTIME_PROVIDER=auto
+PANDASCORE_API_TOKEN=你的PandaScoreToken
+```
+
+如果只配置了 `DEEPSEEK_API_KEY`，系统会使用本地演示赛程并调用 DeepSeek 生成分析；如果同时配置 `PANDASCORE_API_TOKEN`，网页会显示 PandaScore 返回的近期真实赛程，再交给本地规则引擎和 DeepSeek 分析。
+
 ## 数据说明
 
 当前 `data/tournaments.json` 中包含课程演示数据。真实部署时可以替换为：

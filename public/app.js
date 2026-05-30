@@ -2,8 +2,9 @@ const state = {
   tournaments: [],
   tournament: null,
   analysis: null,
+  meta: null,
   filter: "all",
-  provider: "local"
+  provider: "deepseek"
 };
 
 const els = {
@@ -57,20 +58,27 @@ async function requestJson(url, options) {
   return response.json();
 }
 
-async function loadTournaments() {
-  const data = await requestJson("/api/tournaments");
+async function loadTournaments(options = {}) {
+  const data = await requestJson(`/api/tournaments${options.refresh ? "?refresh=1" : ""}`);
   state.tournaments = data.tournaments;
+  state.meta = data.meta || null;
   els.tournamentSelect.innerHTML = state.tournaments
     .map((item) => `<option value="${item.id}">${item.name}</option>`)
     .join("");
-  await loadAnalysis(state.tournaments[0].id);
+  await loadAnalysis(state.tournaments[0].id, options);
 }
 
-async function loadAnalysis(tournamentId = state.tournament?.id) {
+async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
   els.heroSummary.textContent = "正在重新计算赛程影响和晋级形势...";
-  const data = await requestJson(`/api/analyze?tournament=${encodeURIComponent(tournamentId)}&provider=${state.provider}`);
+  const params = new URLSearchParams({
+    tournament: tournamentId,
+    provider: state.provider
+  });
+  if (options.refresh) params.set("refresh", "1");
+  const data = await requestJson(`/api/analyze?${params.toString()}`);
   state.tournament = data.tournament;
   state.analysis = data.analysis;
+  state.meta = data.meta || state.meta;
   els.tournamentSelect.value = state.tournament.id;
   renderAll();
 }
@@ -87,11 +95,22 @@ function renderHeader() {
   const live = state.tournament.matches.filter((match) => match.status === "live").length;
   els.gameLabel.textContent = `${state.tournament.game} · ${state.tournament.stage}`;
   els.tournamentTitle.textContent = state.tournament.name;
-  els.sourceText.textContent = state.tournament.source;
+  els.sourceText.textContent = sourceSummary();
   els.heroSummary.textContent = firstLine(state.analysis.summary);
   els.liveCount.textContent = live;
   els.keyCount.textContent = state.analysis.keyMatches.filter((item) => item.importance !== "低").length;
   els.advanceSlots.textContent = state.tournament.rules.advanceSlots;
+}
+
+function sourceSummary() {
+  const meta = state.meta || {};
+  const parts = [meta.source || state.tournament.source || "未知数据源"];
+  if (meta.mode === "realtime") parts.push("实时接口");
+  if (meta.mode === "fallback") parts.push("已回退");
+  if (meta.matchCount != null) parts.push(`${meta.matchCount} 场`);
+  if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);
+  if (meta.warning) parts.push(meta.warning);
+  return parts.join(" · ");
 }
 
 function firstLine(text) {
@@ -150,11 +169,16 @@ function renderStandings() {
 }
 
 function renderAnalysis() {
-  els.analysisText.innerHTML = String(state.analysis.summary || "")
+  const lines = String(state.analysis.summary || "")
     .split("\n")
-    .filter(Boolean)
-    .map((line) => `<p>${escapeHtml(line)}</p>`)
-    .join("");
+    .filter(Boolean);
+  if (state.analysis.llmError) {
+    lines.push(`模型接口暂不可用，已使用本地规则引擎回答。错误：${state.analysis.llmError}`);
+  }
+  if (state.meta?.warning) {
+    lines.push(state.meta.warning);
+  }
+  els.analysisText.innerHTML = lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
   els.keyMatches.innerHTML = state.analysis.keyMatches.slice(0, 5).map((match) => `
     <div class="key-item">
       <strong>${match.left} vs ${match.right} · ${match.tag}</strong>
@@ -229,7 +253,7 @@ els.providerSelect.addEventListener("change", (event) => {
 });
 
 els.refreshButton.addEventListener("click", () => {
-  loadAnalysis().catch((error) => {
+  loadTournaments({ refresh: true }).catch((error) => {
     els.heroSummary.textContent = `刷新失败：${error.message}`;
   });
 });
@@ -278,6 +302,8 @@ document.querySelectorAll(".score-buttons button").forEach((button) => {
     }
   });
 });
+
+els.providerSelect.value = state.provider;
 
 loadTournaments()
   .then(() => {

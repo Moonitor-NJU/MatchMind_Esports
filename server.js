@@ -6,6 +6,11 @@ const PORT = Number(process.env.PORT || 3000);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_FILE = path.join(ROOT, "data", "tournaments.json");
+const ENV_FILE = path.join(ROOT, ".env");
+
+loadEnvFile();
+
+const LIVE_CACHE_TTL_MS = Number(process.env.LIVE_CACHE_TTL_MS || 5 * 60 * 1000);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -19,6 +24,20 @@ const mimeTypes = {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function loadEnvFile() {
+  if (!fs.existsSync(ENV_FILE)) return;
+  const lines = fs.readFileSync(ENV_FILE, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const index = trimmed.indexOf("=");
+    const key = trimmed.slice(0, index).trim();
+    const rawValue = trimmed.slice(index + 1).trim();
+    const value = rawValue.replace(/^["']|["']$/g, "");
+    if (key && process.env[key] == null) process.env[key] = value;
+  }
 }
 
 function sendJson(res, status, payload) {
@@ -53,6 +72,205 @@ function readBody(req) {
 function getTournament(id) {
   const data = readJson(DATA_FILE);
   return data.tournaments.find((item) => item.id === id) || data.tournaments[0];
+}
+
+function getTournamentFromData(data, id) {
+  return data.tournaments.find((item) => item.id === id) || data.tournaments[0];
+}
+
+let liveDataCache = null;
+
+async function getTournamentData(options = {}) {
+  const provider = (process.env.REALTIME_PROVIDER || "auto").toLowerCase();
+  const now = Date.now();
+  if (!options.refresh && liveDataCache && now - liveDataCache.fetchedAt < LIVE_CACHE_TTL_MS) {
+    return liveDataCache.data;
+  }
+
+  const localData = readJson(DATA_FILE);
+  if (provider === "local") {
+    return withMeta(localData, {
+      mode: "local",
+      source: "本地演示数据",
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  try {
+    const realTimeData = await fetchRealTimeData();
+    if (realTimeData.tournaments.length) {
+      liveDataCache = { fetchedAt: now, data: realTimeData };
+      return realTimeData;
+    }
+    throw new Error("实时接口没有返回可展示的比赛");
+  } catch (error) {
+    const fallback = withMeta(localData, {
+      mode: "fallback",
+      source: "本地演示数据",
+      updatedAt: new Date().toISOString(),
+      warning: `实时赛事接口暂不可用，已回退到本地数据：${error.message}`
+    });
+    liveDataCache = { fetchedAt: now, data: fallback };
+    return fallback;
+  }
+}
+
+function withMeta(data, meta) {
+  return {
+    ...data,
+    meta
+  };
+}
+
+async function fetchRealTimeData() {
+  const provider = (process.env.REALTIME_PROVIDER || "auto").toLowerCase();
+  if (provider === "pandascore" || provider === "auto") {
+    return fetchPandaScoreLol();
+  }
+  throw new Error(`未知实时数据源：${provider}`);
+}
+
+async function fetchPandaScoreLol() {
+  const token = process.env.PANDASCORE_API_TOKEN || process.env.PANDASCORE_TOKEN;
+  if (!token) {
+    throw new Error("未配置 PANDASCORE_API_TOKEN，无法拉取 PandaScore 实时赛程");
+  }
+
+  const baseUrl = process.env.PANDASCORE_BASE_URL || "https://api.pandascore.co";
+  const game = process.env.PANDASCORE_GAME || "lol";
+  const limit = clampNumber(process.env.PANDASCORE_MATCH_LIMIT, 10, 100, 50);
+  const lookbackDays = clampNumber(process.env.PANDASCORE_LOOKBACK_DAYS, 1, 60, 14);
+  const lookaheadDays = clampNumber(process.env.PANDASCORE_LOOKAHEAD_DAYS, 1, 90, 30);
+  const now = new Date();
+  const from = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+  const to = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000).toISOString();
+  const endpoint = new URL(`/${game}/matches`, baseUrl);
+  endpoint.searchParams.set("sort", "begin_at");
+  endpoint.searchParams.set("per_page", String(limit));
+  endpoint.searchParams.set("range[begin_at]", `${from},${to}`);
+  for (const id of csv(process.env.PANDASCORE_LEAGUE_IDS)) {
+    endpoint.searchParams.append("filter[league_id]", id);
+  }
+
+  const response = await fetch(endpoint, {
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${token}`
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`PandaScore request failed: ${response.status}`);
+  }
+  const matches = await response.json();
+  const tournament = normalizePandaScoreMatches(matches, game);
+  return withMeta({ tournaments: [tournament] }, {
+    mode: "realtime",
+    source: "PandaScore 实时赛事 API",
+    updatedAt: new Date().toISOString(),
+    matchCount: tournament.matches.length
+  });
+}
+
+function normalizePandaScoreMatches(matches, game) {
+  const teams = new Map();
+  const normalizedMatches = [];
+  const colors = ["#0f9f87", "#2563eb", "#e8475b", "#d97706", "#7c3aed", "#111827", "#0891b2", "#db2777"];
+
+  for (const raw of Array.isArray(matches) ? matches : []) {
+    const opponents = Array.isArray(raw.opponents) ? raw.opponents.slice(0, 2) : [];
+    if (opponents.length < 2) continue;
+    const left = normalizePandaTeam(opponents[0].opponent, teams, colors);
+    const right = normalizePandaTeam(opponents[1].opponent, teams, colors);
+    if (!left || !right) continue;
+    const result = normalizePandaResult(raw, left.pandaId, right.pandaId);
+    const league = raw.league?.name || "League of Legends";
+    const serie = raw.serie?.full_name || raw.serie?.name || raw.tournament?.name || "实时赛程";
+
+    normalizedMatches.push({
+      id: `ps-${raw.id}`,
+      startsAt: raw.begin_at || raw.scheduled_at || raw.original_scheduled_at || new Date().toISOString(),
+      status: normalizePandaStatus(raw.status),
+      round: raw.name || raw.match_type || serie,
+      bestOf: Number(raw.number_of_games || raw.games?.length || 3),
+      league,
+      serie,
+      teams: [left.id, right.id],
+      result
+    });
+  }
+
+  const teamList = Array.from(teams.values()).map(({ pandaId, ...team }) => team);
+  return {
+    id: `${game}-pandascore-live`,
+    name: `${game.toUpperCase()} 实时赛事追踪`,
+    game: game === "lol" ? "League of Legends" : game.toUpperCase(),
+    region: "Global",
+    stage: "PandaScore 实时赛程",
+    season: new Date().getFullYear().toString(),
+    source: "PandaScore 实时赛事 API",
+    rules: {
+      format: "按接口返回的近期赛程自动统计",
+      advanceSlots: Math.min(4, Math.max(1, Math.ceil(teamList.length / 2))),
+      eliminationSlots: Math.min(2, Math.max(0, Math.floor(teamList.length / 4))),
+      tiebreakers: ["胜场", "小分净胜", "小分胜场", "后续可接官方排名规则"]
+    },
+    teams: teamList,
+    matches: normalizedMatches.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+  };
+}
+
+function normalizePandaTeam(rawTeam, teams, colors) {
+  if (!rawTeam) return null;
+  const pandaId = rawTeam.id;
+  const id = slugify(rawTeam.acronym || rawTeam.slug || rawTeam.name || `team-${pandaId}`);
+  if (!teams.has(id)) {
+    teams.set(id, {
+      id,
+      pandaId,
+      name: rawTeam.acronym || rawTeam.name,
+      region: rawTeam.location || "Global",
+      color: colors[teams.size % colors.length]
+    });
+  }
+  return teams.get(id);
+}
+
+function normalizePandaResult(match, leftPandaId, rightPandaId) {
+  if (match.status !== "finished") return null;
+  const resultByTeam = new Map((match.results || []).map((item) => [item.team_id, item.score]));
+  const left = resultByTeam.get(leftPandaId);
+  const right = resultByTeam.get(rightPandaId);
+  if (left == null || right == null) return null;
+  return { left, right };
+}
+
+function normalizePandaStatus(status) {
+  return {
+    running: "live",
+    not_started: "scheduled",
+    finished: "finished",
+    canceled: "finished"
+  }[status] || "scheduled";
+}
+
+function clampNumber(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function csv(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function slugify(value) {
+  return String(value || "team")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "team";
 }
 
 function teamMap(tournament) {
@@ -270,13 +488,14 @@ async function callLlm(provider, prompt, context) {
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/api/tournaments") {
-    const data = readJson(DATA_FILE);
+    const data = await getTournamentData({ refresh: url.searchParams.get("refresh") === "1" });
     sendJson(res, 200, data);
     return;
   }
 
   if (url.pathname === "/api/analyze") {
-    const tournament = getTournament(url.searchParams.get("tournament"));
+    const data = await getTournamentData({ refresh: url.searchParams.get("refresh") === "1" });
+    const tournament = getTournamentFromData(data, url.searchParams.get("tournament"));
     const analysis = localAnalysis(tournament);
     const provider = url.searchParams.get("provider") || "local";
     if (provider !== "local") {
@@ -287,13 +506,14 @@ async function handleApi(req, res) {
         analysis.llmError = error.message;
       }
     }
-    sendJson(res, 200, { tournament, analysis, updatedAt: new Date().toISOString() });
+    sendJson(res, 200, { tournament, analysis, meta: data.meta, updatedAt: new Date().toISOString() });
     return;
   }
 
   if (url.pathname === "/api/chat" && req.method === "POST") {
     const body = await readBody(req);
-    const tournament = getTournament(body.tournamentId);
+    const data = await getTournamentData();
+    const tournament = getTournamentFromData(data, body.tournamentId);
     const analysis = localAnalysis(tournament, body.scenario || {});
     const provider = body.provider || "local";
     let answer = answerLocally(body.question || "", tournament, analysis);
@@ -305,15 +525,16 @@ async function handleApi(req, res) {
         answer += `\n\n模型接口暂不可用，已使用本地规则引擎回答。错误：${error.message}`;
       }
     }
-    sendJson(res, 200, { answer, analysis });
+    sendJson(res, 200, { answer, analysis, meta: data.meta });
     return;
   }
 
   if (url.pathname === "/api/scenario" && req.method === "POST") {
     const body = await readBody(req);
-    const tournament = getTournament(body.tournamentId);
+    const data = await getTournamentData();
+    const tournament = getTournamentFromData(data, body.tournamentId);
     const analysis = localAnalysis(tournament, body.scenario || {});
-    sendJson(res, 200, { tournament, analysis, updatedAt: new Date().toISOString() });
+    sendJson(res, 200, { tournament, analysis, meta: data.meta, updatedAt: new Date().toISOString() });
     return;
   }
 

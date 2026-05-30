@@ -162,67 +162,175 @@ async function fetchPandaScoreLol() {
     throw new Error(`PandaScore request failed: ${response.status}`);
   }
   const matches = await response.json();
-  const tournament = normalizePandaScoreMatches(matches, game);
-  return withMeta({ tournaments: [tournament] }, {
+  const tournaments = normalizePandaScoreMatches(matches, game);
+  return withMeta({ tournaments }, {
     mode: "realtime",
     source: "PandaScore 实时赛事 API",
     updatedAt: new Date().toISOString(),
-    matchCount: tournament.matches.length
+    matchCount: tournaments.reduce((sum, tournament) => sum + tournament.matches.length, 0),
+    competitionCount: tournaments.length,
+    competitions: tournaments.map((tournament) => ({
+      id: tournament.id,
+      name: tournament.name,
+      stage: tournament.stage,
+      matchCount: tournament.matches.length,
+      teamCount: tournament.teams.length
+    }))
   });
 }
 
 function normalizePandaScoreMatches(matches, game) {
-  const teams = new Map();
-  const normalizedMatches = [];
   const colors = ["#0f9f87", "#2563eb", "#e8475b", "#d97706", "#7c3aed", "#111827", "#0891b2", "#db2777"];
+  const groups = new Map();
+  const accepted = [];
 
   for (const raw of Array.isArray(matches) ? matches : []) {
     const opponents = Array.isArray(raw.opponents) ? raw.opponents.slice(0, 2) : [];
     if (opponents.length < 2) continue;
-    const left = normalizePandaTeam(opponents[0].opponent, teams, colors);
-    const right = normalizePandaTeam(opponents[1].opponent, teams, colors);
+
+    const descriptor = pandaCompetitionDescriptor(raw, game);
+    if (!shouldKeepPandaCompetition(descriptor)) continue;
+    accepted.push(raw);
+  }
+
+  const sourceMatches = accepted.length ? accepted : Array.isArray(matches) ? matches : [];
+
+  for (const raw of sourceMatches) {
+    const opponents = Array.isArray(raw.opponents) ? raw.opponents.slice(0, 2) : [];
+    if (opponents.length < 2) continue;
+
+    const descriptor = pandaCompetitionDescriptor(raw, game);
+    const key = descriptor.key;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        descriptor,
+        teams: new Map(),
+        matches: []
+      });
+    }
+    const group = groups.get(key);
+    const left = normalizePandaTeam(opponents[0].opponent, group.teams, colors);
+    const right = normalizePandaTeam(opponents[1].opponent, group.teams, colors);
     if (!left || !right) continue;
     const result = normalizePandaResult(raw, left.pandaId, right.pandaId);
-    const league = raw.league?.name || "League of Legends";
-    const serie = raw.serie?.full_name || raw.serie?.name || raw.tournament?.name || "实时赛程";
 
-    normalizedMatches.push({
+    group.matches.push({
       id: `ps-${raw.id}`,
       startsAt: raw.begin_at || raw.scheduled_at || raw.original_scheduled_at || new Date().toISOString(),
       status: normalizePandaStatus(raw.status),
-      round: raw.name || raw.match_type || serie,
+      round: raw.name || raw.match_type || descriptor.stage,
       bestOf: Number(raw.number_of_games || raw.games?.length || 3),
-      league,
-      serie,
+      league: descriptor.league,
+      serie: descriptor.serie,
+      stage: descriptor.stage,
       teams: [left.id, right.id],
       result
     });
   }
 
-  const teamList = Array.from(teams.values()).map(({ pandaId, ...team }) => team);
+  return Array.from(groups.values())
+    .map((group) => {
+      const teamList = Array.from(group.teams.values()).map(({ pandaId, ...team }) => team);
+      return {
+        id: group.descriptor.id,
+        name: group.descriptor.name,
+        game: game === "lol" ? "League of Legends" : game.toUpperCase(),
+        region: group.descriptor.region,
+        stage: group.descriptor.stage,
+        season: group.descriptor.serie,
+        source: `PandaScore 实时赛事 API · ${group.descriptor.league}`,
+        rules: {
+          format: "按当前赛事组内赛程自动统计",
+          advanceSlots: Math.min(4, Math.max(1, Math.ceil(teamList.length / 2))),
+          eliminationSlots: Math.min(2, Math.max(0, Math.floor(teamList.length / 4))),
+          tiebreakers: ["胜场", "小分净胜", "小分胜场", "官方排名规则以赛事官网为准"]
+        },
+        teams: teamList,
+        matches: group.matches.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+      };
+    })
+    .filter((tournament) => tournament.matches.length)
+    .sort(comparePandaTournaments);
+}
+
+function pandaCompetitionDescriptor(raw, game) {
+  const league = raw.league?.name || game.toUpperCase();
+  const serie = raw.serie?.full_name || raw.serie?.name || "近期赛程";
+  const stage = raw.tournament?.name || raw.tournament?.slug || "赛程";
+  const region = raw.league?.region || raw.serie?.league?.region || "Global";
+  const id = [
+    game,
+    raw.league?.id || slugify(league),
+    raw.serie?.id || slugify(serie),
+    raw.tournament?.id || slugify(stage)
+  ].map((part) => slugify(part)).join("-");
   return {
-    id: `${game}-pandascore-live`,
-    name: `${game.toUpperCase()} 实时赛事追踪`,
-    game: game === "lol" ? "League of Legends" : game.toUpperCase(),
-    region: "Global",
-    stage: "PandaScore 实时赛程",
-    season: new Date().getFullYear().toString(),
-    source: "PandaScore 实时赛事 API",
-    rules: {
-      format: "按接口返回的近期赛程自动统计",
-      advanceSlots: Math.min(4, Math.max(1, Math.ceil(teamList.length / 2))),
-      eliminationSlots: Math.min(2, Math.max(0, Math.floor(teamList.length / 4))),
-      tiebreakers: ["胜场", "小分净胜", "小分胜场", "后续可接官方排名规则"]
-    },
-    teams: teamList,
-    matches: normalizedMatches.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+    id,
+    key: id,
+    league,
+    serie,
+    stage,
+    region,
+    name: [league, serie, stage].filter(uniqueLabel).join(" · ")
   };
+}
+
+function uniqueLabel(value, index, list) {
+  const normalized = String(value || "").toLowerCase();
+  return value && list.findIndex((item) => String(item || "").toLowerCase() === normalized) === index;
+}
+
+function shouldKeepPandaCompetition(descriptor) {
+  if ((process.env.PANDASCORE_FOCUS || "cn-major").toLowerCase() === "all") return true;
+  const text = `${descriptor.league} ${descriptor.serie} ${descriptor.stage}`.toLowerCase();
+  const include = csv(process.env.PANDASCORE_INCLUDE_KEYWORDS || [
+    "lpl",
+    "league of legends pro league",
+    "lck",
+    "league of legends champions korea",
+    "lec",
+    "league of legends emea championship",
+    "msi",
+    "mid-season",
+    "world championship",
+    "worlds",
+    "ewc",
+    "esports world cup",
+    "first stand",
+    "demacia"
+  ].join(","));
+  const exclude = csv(process.env.PANDASCORE_EXCLUDE_KEYWORDS || [
+    "academy",
+    "challenger",
+    "challengers",
+    "division 2",
+    "secondary"
+  ].join(","));
+  return include.some((keyword) => text.includes(keyword.toLowerCase())) &&
+    !exclude.some((keyword) => text.includes(keyword.toLowerCase()));
+}
+
+function comparePandaTournaments(a, b) {
+  const priority = (value) => {
+    const text = `${value.name} ${value.stage}`.toLowerCase();
+    const keywords = ["lpl", "lck", "ewc", "esports world cup", "msi", "world", "lec"];
+    const index = keywords.findIndex((keyword) => text.includes(keyword));
+    return index === -1 ? keywords.length : index;
+  };
+  const byPriority = priority(a) - priority(b);
+  if (byPriority) return byPriority;
+  const aLive = a.matches.some((match) => match.status === "live") ? 0 : 1;
+  const bLive = b.matches.some((match) => match.status === "live") ? 0 : 1;
+  if (aLive !== bLive) return aLive - bLive;
+  const aNext = a.matches[0]?.startsAt || "";
+  const bNext = b.matches[0]?.startsAt || "";
+  return aNext.localeCompare(bNext);
 }
 
 function normalizePandaTeam(rawTeam, teams, colors) {
   if (!rawTeam) return null;
   const pandaId = rawTeam.id;
-  const id = slugify(rawTeam.acronym || rawTeam.slug || rawTeam.name || `team-${pandaId}`);
+  const id = `${slugify(rawTeam.acronym || rawTeam.slug || rawTeam.name || "team")}-${pandaId}`;
   if (!teams.has(id)) {
     teams.set(id, {
       id,

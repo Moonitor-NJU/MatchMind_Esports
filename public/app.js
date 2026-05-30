@@ -65,7 +65,10 @@ async function loadTournaments(options = {}) {
   els.tournamentSelect.innerHTML = state.tournaments
     .map((item) => `<option value="${item.id}">${item.name}</option>`)
     .join("");
-  await loadAnalysis(state.tournaments[0].id, options);
+  const preferredId = state.tournaments.some((item) => item.id === state.tournament?.id)
+    ? state.tournament.id
+    : state.tournaments[0]?.id;
+  await loadAnalysis(preferredId, options);
 }
 
 async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
@@ -107,6 +110,7 @@ function sourceSummary() {
   const parts = [meta.source || state.tournament.source || "未知数据源"];
   if (meta.mode === "realtime") parts.push("实时接口");
   if (meta.mode === "fallback") parts.push("已回退");
+  if (meta.competitionCount != null) parts.push(`${meta.competitionCount} 个赛事组`);
   if (meta.matchCount != null) parts.push(`${meta.matchCount} 场`);
   if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);
   if (meta.warning) parts.push(meta.warning);

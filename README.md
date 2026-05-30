@@ -112,6 +112,27 @@ PANDASCORE_LOOKAHEAD_DAYS=30
 PANDASCORE_MATCH_LIMIT=50
 ```
 
+PandaScore 默认会返回全球范围内的 LOL 近期赛程。为了避免把 LPL、LCK、LEC、EWC 预选赛、外卡赛区等比赛混进同一个积分榜，后端会按 `league + serie + tournament` 自动拆成多个赛事组，网页下拉框中分别展示。默认 `PANDASCORE_FOCUS=cn-major`，优先保留中国观众更常关注的 LPL、LCK、LEC、MSI、全球总决赛、EWC、First Stand、德玛西亚杯等赛事。
+
+可选过滤配置：
+
+```bash
+# cn-major：重点赛事过滤；all：展示 PandaScore 返回的全部赛事组
+PANDASCORE_FOCUS=cn-major
+
+# 自定义保留关键词，命中 league/serie/tournament 任一字段即可
+PANDASCORE_INCLUDE_KEYWORDS=lpl,lck,lec,ewc,msi,world championship
+
+# 自定义排除关键词
+PANDASCORE_EXCLUDE_KEYWORDS=academy,challengers,division 2
+```
+
+如果你想精确展示某些联赛，建议使用 PandaScore 的 league id：
+
+```bash
+PANDASCORE_LEAGUE_IDS=指定的联赛id
+```
+
 推荐 `.env` 示例：
 
 ```bash

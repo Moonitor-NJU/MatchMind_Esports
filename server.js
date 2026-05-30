@@ -138,36 +138,35 @@ async function fetchPandaScoreLol() {
 
   const baseUrl = process.env.PANDASCORE_BASE_URL || "https://api.pandascore.co";
   const game = process.env.PANDASCORE_GAME || "lol";
-  const limit = clampNumber(process.env.PANDASCORE_MATCH_LIMIT, 10, 100, 80);
+  const limit = clampNumber(process.env.PANDASCORE_MATCH_LIMIT, 10, 100, 100);
   const lookbackDays = clampNumber(process.env.PANDASCORE_LOOKBACK_DAYS, 0, 60, 2);
-  const lookaheadDays = clampNumber(process.env.PANDASCORE_LOOKAHEAD_DAYS, 1, 90, 21);
+  const lookaheadDays = clampNumber(process.env.PANDASCORE_LOOKAHEAD_DAYS, 1, 90, 45);
   const now = new Date();
   const from = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
   const to = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000).toISOString();
-  const endpoint = new URL(`/${game}/matches`, baseUrl);
-  endpoint.searchParams.set("sort", "begin_at");
-  endpoint.searchParams.set("per_page", String(limit));
-  endpoint.searchParams.set("range[begin_at]", `${from},${to}`);
-  for (const id of csv(process.env.PANDASCORE_LEAGUE_IDS)) {
-    endpoint.searchParams.append("filter[league_id]", id);
-  }
-
-  const response = await fetch(endpoint, {
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${token}`
+  const endpoints = pandaMatchEndpoints(baseUrl, game, limit, from, to);
+  const batches = await Promise.all(endpoints.map(async (endpoint) => {
+    const response = await fetch(endpoint, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`PandaScore request failed: ${response.status}`);
     }
-  });
-  if (!response.ok) {
-    throw new Error(`PandaScore request failed: ${response.status}`);
-  }
-  const matches = await response.json();
+    return response.json();
+  }));
+  const matches = dedupeMatches(batches.flat());
   const tournaments = normalizePandaScoreMatches(matches, game);
   await enrichWithPandaStandings(tournaments, baseUrl, token);
   return withMeta({ tournaments }, {
     mode: "realtime",
     source: "PandaScore 实时赛事 API",
     updatedAt: new Date().toISOString(),
+    queryWindow: { from, to },
+    queryCount: endpoints.length,
+    rawMatchCount: matches.length,
     matchCount: tournaments.reduce((sum, tournament) => sum + tournament.matches.length, 0),
     competitionCount: tournaments.length,
     competitions: tournaments.map((tournament) => ({
@@ -179,6 +178,31 @@ async function fetchPandaScoreLol() {
       standingsSource: tournament.standingsSource || "schedule-derived"
     }))
   });
+}
+
+function pandaMatchEndpoints(baseUrl, game, limit, from, to) {
+  const configured = csv(process.env.PANDASCORE_LEAGUE_IDS);
+  const defaultFocus = (process.env.PANDASCORE_FOCUS || "cn-major").toLowerCase() === "all"
+    ? []
+    : csv(process.env.PANDASCORE_DEFAULT_LEAGUE_IDS || "294,293,4197,5262");
+  const leagueIds = configured.length ? configured : defaultFocus;
+  const ids = leagueIds.length ? leagueIds : [null];
+  return ids.map((leagueId) => {
+    const endpoint = new URL(`/${game}/matches`, baseUrl);
+    endpoint.searchParams.set("sort", "begin_at");
+    endpoint.searchParams.set("per_page", String(limit));
+    endpoint.searchParams.set("range[begin_at]", `${from},${to}`);
+    if (leagueId) endpoint.searchParams.set("filter[league_id]", leagueId);
+    return endpoint;
+  });
+}
+
+function dedupeMatches(matches) {
+  const byId = new Map();
+  for (const match of Array.isArray(matches) ? matches : []) {
+    if (match?.id != null) byId.set(match.id, match);
+  }
+  return Array.from(byId.values());
 }
 
 function normalizePandaScoreMatches(matches, game) {
@@ -429,21 +453,35 @@ function shouldKeepPandaCompetition(descriptor) {
     "demacia"
   ].join(","));
   const exclude = csv(process.env.PANDASCORE_EXCLUDE_KEYWORDS || [
+    "lplol",
     "academy",
     "challenger",
     "challengers",
     "division 2",
     "secondary"
   ].join(","));
-  return include.some((keyword) => text.includes(keyword.toLowerCase())) &&
+  return include.some((keyword) => keywordMatches(text, keyword)) &&
     !exclude.some((keyword) => text.includes(keyword.toLowerCase()));
+}
+
+function keywordMatches(text, keyword) {
+  const normalized = keyword.toLowerCase().trim();
+  if (!normalized) return false;
+  if (/^[a-z0-9]+$/.test(normalized)) {
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalized)}([^a-z0-9]|$)`).test(text);
+  }
+  return text.includes(normalized);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function comparePandaTournaments(a, b) {
   const priority = (value) => {
     const text = `${value.name} ${value.stage}`.toLowerCase();
     const keywords = ["lpl", "lck", "ewc", "esports world cup", "msi", "world", "lec"];
-    const index = keywords.findIndex((keyword) => text.includes(keyword));
+    const index = keywords.findIndex((keyword) => keywordMatches(text, keyword));
     return index === -1 ? keywords.length : index;
   };
   const byPriority = priority(a) - priority(b);

@@ -112,6 +112,7 @@ function sourceSummary() {
   if (meta.mode === "fallback") parts.push("已回退");
   if (meta.competitionCount != null) parts.push(`${meta.competitionCount} 个赛事组`);
   if (meta.matchCount != null) parts.push(`${meta.matchCount} 场`);
+  if (meta.queryCount != null) parts.push(`${meta.queryCount} 次查询`);
   if (state.tournament?.standingsSource === "official") parts.push("官方积分榜");
   if (state.tournament?.standingsSource === "schedule-derived") parts.push("近期赛程推算榜");
   if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);

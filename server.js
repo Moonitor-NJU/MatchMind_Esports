@@ -923,21 +923,23 @@ function regularFocusCandidates(tournament, teams) {
   const nextDirect = nextDirectRankingMatch(tournament, sorted, advanceSlots);
 
   if (topCut && sorted.length >= 4) {
+    const scenario = cutRaceScenario(tournament, topCut, sorted, 2);
     candidates.push({
       score: topCut.gap <= 1 ? 94 : 76,
       tone: topCut.gap <= 1 ? "hot" : "watch",
       headline: `${topCut.left.name}、${topCut.right.name} 正在争夺${topCut.label}。`,
-      body: `${topCut.left.name} 当前 ${topCut.left.wins}-${topCut.left.losses}，${topCut.right.name} 当前 ${topCut.right.wins}-${topCut.right.losses}，胜场差 ${topCut.gap}。若后续胜场接近，小分和直接交手会变成关键。`,
+      body: scenario,
       chips: ["前二竞争", "复活甲", "小分"]
     });
   }
 
   if (playoffCut && playoffCut.slot !== 2) {
+    const scenario = cutRaceScenario(tournament, playoffCut, sorted, playoffCut.slot);
     candidates.push({
       score: playoffCut.gap <= 1 ? 88 : 70,
       tone: playoffCut.gap <= 1 ? "hot" : "watch",
       headline: `${playoffCut.left.name} 与 ${playoffCut.right.name} 卡在${playoffCut.label}分界线。`,
-      body: `第 ${playoffCut.slot} 名和第 ${playoffCut.slot + 1} 名胜场差 ${playoffCut.gap}，后续每一场都会影响席位归属；不能只看单场胜负，要同步看小分。`,
+      body: scenario,
       chips: ["晋级线", "卡位战"]
     });
   }
@@ -963,6 +965,84 @@ function regularFocusCandidates(tournament, teams) {
     });
   }
   return candidates;
+}
+
+function cutRaceScenario(tournament, race, sorted, slot) {
+  const contenders = nearbyContenders(sorted, slot);
+  const scheduleLines = contenders
+    .map((team) => teamScheduleLine(tournament, team))
+    .filter(Boolean);
+  const direct = directMatchAmong(tournament, contenders);
+  const leader = race.left;
+  const chaser = race.right;
+  const gapText = `${leader.name} 当前 ${leader.wins}-${leader.losses}，${chaser.name} 当前 ${chaser.wins}-${chaser.losses}，胜场差 ${race.gap}`;
+  const scenarioLines = [];
+
+  if (race.gap === 0) {
+    scenarioLines.push(`${leader.name} 和 ${chaser.name} 同胜场，下一轮谁丢分都会把主动权让给对方；若都赢，排序大概率继续看小分/局分。`);
+  } else if (race.gap === 1) {
+    scenarioLines.push(`${chaser.name} 需要自己赢球，同时等待 ${leader.name} 丢一场，才能把竞争重新拉回同胜场；如果 ${leader.name} 也赢，${chaser.name} 至少还要继续追小分。`);
+  } else {
+    scenarioLines.push(`${chaser.name} 已经落后 ${race.gap} 个胜场，短期内必须连续拿分，同时等待前面的队伍连续失误。`);
+  }
+
+  if (direct) {
+    scenarioLines.push(`最直接的变数是 ${direct.left.name} vs ${direct.right.name}，这场会直接改变分界线两侧的胜场关系。`);
+  }
+  if (scheduleLines.length) {
+    scenarioLines.push(`近期重点赛程：${scheduleLines.join("；")}。`);
+  }
+  return `${gapText}。${scenarioLines.join("")}`;
+}
+
+function nearbyContenders(sorted, slot) {
+  if (slot === 2) return sorted.slice(0, Math.min(sorted.length, 3));
+  const start = Math.max(0, slot - 3);
+  const end = Math.min(sorted.length, slot + 2);
+  return sorted.slice(start, end);
+}
+
+function teamScheduleLine(tournament, team) {
+  const matches = upcomingMatchesForTeam(tournament, team.name).slice(0, 2);
+  if (!matches.length) return `${team.name} 当前窗口内暂无待赛，主动权取决于竞争对手赛果`;
+  return `${team.name} 接下来 ${matches.map((match) => `${formatShortDate(match.startsAt)} 对 ${opponentName(tournament, match, team.name)}`).join("、")}`;
+}
+
+function upcomingMatchesForTeam(tournament, team) {
+  return tournament.matches
+    .filter((match) => match.status !== "finished" && match.teams.some((id) => teamName(tournament, id) === team))
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+}
+
+function directMatchAmong(tournament, teams) {
+  const names = new Set(teams.map((team) => team.name));
+  return tournament.matches
+    .filter((match) => match.status !== "finished")
+    .map((match) => {
+      const left = teamName(tournament, match.teams[0]);
+      const right = teamName(tournament, match.teams[1]);
+      if (!names.has(left) || !names.has(right)) return null;
+      return { left: teams.find((team) => team.name === left), right: teams.find((team) => team.name === right), startsAt: match.startsAt };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0] || null;
+}
+
+function opponentName(tournament, match, team) {
+  return match.teams.map((id) => teamName(tournament, id)).find((name) => name !== team) || "待定";
+}
+
+function formatShortDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间待定";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai"
+  }).format(date);
 }
 
 function closeCutRace(sorted, slot, label) {

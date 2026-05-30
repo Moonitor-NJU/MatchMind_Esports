@@ -61,6 +61,8 @@
           </div>
         </section>
 
+        <section class="focus-strip" id="focusStrip"></section>
+
         <section id="schedule" class="section">
           <div class="section-head">
             <div>
@@ -80,11 +82,11 @@
         <section id="standings" class="section">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Standings</p>
-              <h3>积分榜</h3>
+              <p class="eyebrow" id="phaseEyebrow">Standings</p>
+              <h3 id="phaseTitle">积分榜</h3>
             </div>
           </div>
-          <div class="table-wrap">
+          <div class="table-wrap" id="standingsTableWrap">
             <table>
               <thead>
                 <tr>
@@ -100,6 +102,7 @@
               <tbody id="standingsBody"></tbody>
             </table>
           </div>
+          <div id="phaseCards" class="phase-cards"></div>
         </section>
 
         <section id="analysis" class="section analysis-grid">

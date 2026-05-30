@@ -391,9 +391,24 @@ function pandaCompetitionDescriptor(raw, game) {
 
 function competitionRules(descriptor, teamCount) {
   const text = `${descriptor.league} ${descriptor.serie} ${descriptor.stage}`.toLowerCase();
+  if (text.includes("lpl") && text.includes("playoff")) {
+    return {
+      format: "LPL Split 2 季后赛双败 BO5",
+      phase: "playoffs",
+      advanceSlots: 0,
+      eliminationSlots: 0,
+      labels: {
+        upper: "胜者组",
+        lower: "败者组",
+        final: "决赛路径"
+      },
+      tiebreakers: ["双败淘汰赛签表", "胜者组晋级", "败者组续命", "BO5 胜负关系"]
+    };
+  }
   if (text.includes("lpl") && (text.includes("ascend") || text.includes("登峰"))) {
     return {
       format: "LPL Split 2 登峰组",
+      phase: "regular",
       advanceSlots: 4,
       playInSlots: 4,
       eliminationSlots: 0,
@@ -407,6 +422,7 @@ function competitionRules(descriptor, teamCount) {
   if (text.includes("lpl") && (text.includes("nirvana") || text.includes("涅槃"))) {
     return {
       format: "LPL Split 2 涅槃组",
+      phase: "regular",
       advanceSlots: 0,
       playInSlots: teamCount,
       eliminationSlots: 0,
@@ -418,6 +434,7 @@ function competitionRules(descriptor, teamCount) {
   }
   return {
     format: "按官方赛事组展示，排名优先使用官方积分榜",
+    phase: text.includes("playoff") || text.includes("qualifier") ? "playoffs" : "regular",
     advanceSlots: Math.min(4, Math.max(1, Math.ceil(teamCount / 2))),
     eliminationSlots: 0,
     labels: {
@@ -702,6 +719,8 @@ function localAnalysis(tournament, scenario = {}) {
   const standings = buildStandings(tournament, scenario);
   const teams = qualificationStatus(tournament, standings);
   const matches = keyMatches(tournament, standings);
+  const phaseView = buildPhaseView(tournament, teams);
+  const focusStories = buildFocusStories(tournament, teams, phaseView);
   const safe = teams.filter((team) => team.tone === "safe").slice(0, 3).map((team) => team.name).join("、") || "暂无";
   const playIn = teams.filter((team) => team.status.includes("骑士") || team.status.includes("附加")).slice(0, 4).map((team) => team.name).join("、") || "暂无";
   const focus = matches[0];
@@ -712,12 +731,150 @@ function localAnalysis(tournament, scenario = {}) {
     ? `${tournament.rules.format}：${tournament.rules.labels.advance}${tournament.rules.labels.playIn ? `，其余关注${tournament.rules.labels.playIn}` : ""}。`
     : `${tournament.rules?.format || "赛制"}，具体晋级规则以官方公告为准。`;
   const summary = [
-    `${tournament.name}。${sourceText}${ruleText}`,
+    `${tournament.name}。${focusStories[0]?.headline || `${sourceText}${ruleText}`}`,
     tournament.rules.advanceSlots ? `目前 ${safe} 位于${tournament.rules.labels?.advance || "排名前列"}；${playIn !== "暂无" ? `${playIn} 位于${tournament.rules.labels?.playIn || "观察区"}。` : "其他队伍仍需结合后续赛程和小分判断。"}` : `当前所有队伍都需要结合${tournament.rules.labels?.playIn || "后续阶段"}规则判断。`,
     focus ? `下一场重点关注 ${focus.left} vs ${focus.right}，原因是双方官方/推算排名接近关键分界。` : "目前没有未结束比赛，或当前接口窗口内没有后续赛程。",
     "不要仅凭最近几场结果宣称锁定晋级或理论淘汰；需要同时看官方积分、赛制分区、小分和加赛规则。"
   ].join("\n");
-  return { standings, teams, keyMatches: matches, summary };
+  return { standings, teams, keyMatches: matches, focusStories, phaseView, summary };
+}
+
+function buildPhaseView(tournament, teams) {
+  if (tournament.rules?.phase === "playoffs") {
+    return buildPlayoffView(tournament);
+  }
+  return {
+    type: "standings",
+    title: "积分榜",
+    subtitle: tournament.standingsSource === "official" ? "官方积分榜" : "近期赛程推算榜",
+    rows: teams
+  };
+}
+
+function buildPlayoffView(tournament) {
+  const finished = tournament.matches.filter((match) => match.status === "finished");
+  const upcoming = tournament.matches.filter((match) => match.status !== "finished");
+  const cards = tournament.matches.map((match) => {
+    const left = teamName(tournament, match.teams[0]);
+    const right = teamName(tournament, match.teams[1]);
+    const bracket = bracketLabel(match.round);
+    const result = match.result;
+    const winner = result ? (result.left > result.right ? left : right) : null;
+    const loser = result ? (result.left > result.right ? right : left) : null;
+    return {
+      id: match.id,
+      startsAt: match.startsAt,
+      round: match.round,
+      bracket,
+      status: match.status,
+      bestOf: match.bestOf,
+      left,
+      right,
+      score: result ? `${result.left}:${result.right}` : "未赛",
+      winner,
+      loser,
+      impact: playoffImpact(bracket, winner, loser)
+    };
+  });
+  return {
+    type: "playoffs",
+    title: "季后赛晋级形势",
+    subtitle: tournament.rules?.format || "淘汰赛签表",
+    completedCount: finished.length,
+    upcomingCount: upcoming.length,
+    cards
+  };
+}
+
+function bracketLabel(round = "") {
+  const text = round.toLowerCase();
+  if (text.includes("upper")) return "胜者组";
+  if (text.includes("lower")) return "败者组";
+  if (text.includes("final")) return "决赛";
+  if (text.includes("semi")) return "半决赛";
+  if (text.includes("quarter")) return "四分之一决赛";
+  return "淘汰赛";
+}
+
+function playoffImpact(bracket, winner, loser) {
+  if (!winner) return `${bracket}待战，胜者继续冲击下一轮，败者将根据签表进入败者组或结束赛程。`;
+  if (bracket === "胜者组") return `${winner} 留在胜者组推进，${loser} 掉入败者组，后续容错明显降低。`;
+  if (bracket === "败者组") return `${winner} 续命晋级，${loser} 被淘汰或结束本阶段。`;
+  return `${winner} 晋级，${loser} 进入下一条签表路径或结束赛程。`;
+}
+
+function teamName(tournament, id) {
+  return tournament.teams.find((team) => team.id === id)?.name || id;
+}
+
+function buildFocusStories(tournament, teams, phaseView) {
+  const text = `${tournament.name} ${tournament.stage} ${tournament.season}`.toLowerCase();
+  if (text.includes("lpl") && phaseView.type === "playoffs") return lplPlayoffFocus(tournament, phaseView);
+  if (text.includes("lck")) return lckRegularFocus(tournament, teams);
+  if (phaseView.type === "playoffs") return genericPlayoffFocus(tournament, phaseView);
+  return genericRegularFocus(tournament, teams);
+}
+
+function lplPlayoffFocus(tournament, phaseView) {
+  const nirvana = ["LGD", "TT", "EDG", "WE"];
+  const ascend = ["JDG", "TES", "AL", "BLG"];
+  const finished = phaseView.cards.filter((card) => card.winner);
+  const upcoming = phaseView.cards.filter((card) => card.status !== "finished");
+  const upsetAttempts = phaseView.cards.filter((card) =>
+    nirvana.includes(card.left) || nirvana.includes(card.right)
+  );
+  const aliveNirvana = Array.from(new Set(upsetAttempts.flatMap((card) => [card.left, card.right]).filter((name) => nirvana.includes(name))));
+  const next = upcoming[0];
+  return [{
+    tone: "hot",
+    headline: `LPL 季后赛进入双败淘汰：${aliveNirvana.join("、") || "涅槃组队伍"} 正在挑战登峰组强队的容错。`,
+    body: next
+      ? `下一场焦点是 ${next.left} vs ${next.right}。${next.bracket} BO${next.bestOf}，胜者继续保留更好的晋级路径，败者将承受败者组压力。`
+      : `当前已完成 ${finished.length} 场，后续重点看败者组是否继续出现涅槃组队伍反杀登峰组的剧情。`,
+    chips: ["LPL", "双败 BO5", "涅槃挑战登峰"]
+  }];
+}
+
+function lckRegularFocus(tournament, teams) {
+  const top = teams.slice().sort((a, b) => a.rank - b.rank).slice(0, 4);
+  const gen = teams.find((team) => team.name === "GEN");
+  const t1 = teams.find((team) => team.name === "T1");
+  const hle = teams.find((team) => team.name === "HLE");
+  const nextT1 = tournament.matches.find((match) => match.status !== "finished" && match.teams.some((id) => teamName(tournament, id) === "T1"));
+  const gap = gen && t1 ? t1.wins - gen.wins : null;
+  let body = `当前前四为 ${top.map((team) => `${team.rank}.${team.name}(${team.wins}-${team.losses})`).join("、")}。`;
+  if (gen && t1) {
+    body += ` GEN 与 T1 处在复活甲/前二种子竞争线附近，T1 当前胜场差 ${gap >= 0 ? "+" : ""}${gap}。`;
+  }
+  if (nextT1) {
+    body += ` T1 下一场对 ${nextT1.teams.map((id) => teamName(tournament, id)).filter((name) => name !== "T1").join("")}，2:0 更有利于小分追赶，失利则会把主动权交给 GEN/HLE。`;
+  }
+  return [{
+    tone: "hot",
+    headline: `${[hle?.name, gen?.name, t1?.name].filter(Boolean).join("、")} 围绕 LCK 前二复活甲展开拉扯。`,
+    body,
+    chips: ["LCK", "前二复活甲", "小分关键"]
+  }];
+}
+
+function genericPlayoffFocus(tournament, phaseView) {
+  const next = phaseView.cards.find((card) => card.status !== "finished");
+  return [{
+    tone: "watch",
+    headline: `${tournament.name} 已进入淘汰赛阶段，积分榜不再是主要视角。`,
+    body: next ? `下一场 ${next.left} vs ${next.right} 决定 ${next.bracket} 后续路径。` : "当前接口窗口内没有未赛场次，重点查看已完成比赛的晋级路径。",
+    chips: ["淘汰赛", "晋级路径"]
+  }];
+}
+
+function genericRegularFocus(tournament, teams) {
+  const top = teams.slice().sort((a, b) => a.rank - b.rank).slice(0, 3);
+  return [{
+    tone: "watch",
+    headline: `${tournament.name} 当前仍以官方积分榜为主。`,
+    body: `排名前列为 ${top.map((team) => `${team.name}(${team.wins}-${team.losses})`).join("、")}，后续需要结合胜场、小分和官方加赛规则判断。`,
+    chips: ["常规赛", "积分榜"]
+  }];
 }
 
 function compactContext(tournament, analysis) {
@@ -732,6 +889,8 @@ function compactContext(tournament, analysis) {
     },
     standings: analysis.standings,
     qualification: analysis.teams,
+    focusStories: analysis.focusStories,
+    phaseView: analysis.phaseView,
     keyMatches: analysis.keyMatches.slice(0, 5)
   });
 }

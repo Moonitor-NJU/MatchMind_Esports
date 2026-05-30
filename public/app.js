@@ -18,9 +18,14 @@ const els = {
   liveCount: document.querySelector("#liveCount"),
   keyCount: document.querySelector("#keyCount"),
   advanceSlots: document.querySelector("#advanceSlots"),
+  focusStrip: document.querySelector("#focusStrip"),
   scheduleFilter: document.querySelector("#scheduleFilter"),
   matchList: document.querySelector("#matchList"),
+  phaseEyebrow: document.querySelector("#phaseEyebrow"),
+  phaseTitle: document.querySelector("#phaseTitle"),
+  standingsTableWrap: document.querySelector("#standingsTableWrap"),
   standingsBody: document.querySelector("#standingsBody"),
+  phaseCards: document.querySelector("#phaseCards"),
   analysisText: document.querySelector("#analysisText"),
   keyMatches: document.querySelector("#keyMatches"),
   scenarioMatch: document.querySelector("#scenarioMatch"),
@@ -88,8 +93,9 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
 
 function renderAll() {
   renderHeader();
+  renderFocus();
   renderSchedule();
-  renderStandings();
+  renderPhase();
   renderAnalysis();
   renderScenarioOptions();
 }
@@ -102,7 +108,23 @@ function renderHeader() {
   els.heroSummary.textContent = firstLine(state.analysis.summary);
   els.liveCount.textContent = live;
   els.keyCount.textContent = state.analysis.keyMatches.filter((item) => item.importance !== "低").length;
-  els.advanceSlots.textContent = state.tournament.rules.advanceSlots;
+  els.advanceSlots.textContent = state.tournament.rules.phase === "playoffs" ? state.analysis.phaseView?.upcomingCount || 0 : state.tournament.rules.advanceSlots;
+}
+
+function renderFocus() {
+  const stories = state.analysis.focusStories || [];
+  els.focusStrip.innerHTML = stories.map((story) => `
+    <article class="focus-card ${story.tone || "watch"}">
+      <div>
+        <p class="eyebrow">赛区焦点</p>
+        <h3>${escapeHtml(story.headline)}</h3>
+        <p>${escapeHtml(story.body)}</p>
+      </div>
+      <div class="focus-chips">
+        ${(story.chips || []).map((chip) => `<span>${escapeHtml(chip)}</span>`).join("")}
+      </div>
+    </article>
+  `).join("");
 }
 
 function sourceSummary() {
@@ -161,6 +183,19 @@ function teamLine(team, score) {
   `;
 }
 
+function renderPhase() {
+  const phase = state.analysis.phaseView || { type: "standings", rows: state.analysis.teams };
+  els.phaseEyebrow.textContent = phase.type === "playoffs" ? "Bracket" : "Standings";
+  els.phaseTitle.textContent = phase.title || (phase.type === "playoffs" ? "晋级形势" : "积分榜");
+  els.standingsTableWrap.hidden = phase.type === "playoffs";
+  els.phaseCards.hidden = phase.type !== "playoffs";
+  if (phase.type === "playoffs") {
+    renderPlayoffPhase(phase);
+  } else {
+    renderStandings();
+  }
+}
+
 function renderStandings() {
   els.standingsBody.innerHTML = state.analysis.teams.map((team) => `
     <tr>
@@ -173,6 +208,29 @@ function renderStandings() {
       <td><span class="status-pill ${team.tone}">${team.status}</span></td>
     </tr>
   `).join("");
+}
+
+function renderPlayoffPhase(phase) {
+  els.phaseCards.innerHTML = `
+    <div class="phase-summary">
+      <strong>${escapeHtml(phase.subtitle || "淘汰赛签表")}</strong>
+      <span>已完成 ${phase.completedCount || 0} 场 · 待赛 ${phase.upcomingCount || 0} 场</span>
+    </div>
+    ${(phase.cards || []).map((card) => `
+      <article class="phase-card ${card.status}">
+        <div class="phase-meta">
+          <span>${escapeHtml(card.bracket)}</span>
+          <strong>${formatDate(card.startsAt)}</strong>
+          <em>BO${card.bestOf}</em>
+        </div>
+        <div class="phase-match">
+          <strong>${escapeHtml(card.left)} vs ${escapeHtml(card.right)}</strong>
+          <span>${escapeHtml(card.score)}</span>
+        </div>
+        <p>${escapeHtml(card.impact)}</p>
+      </article>
+    `).join("")}
+  `;
 }
 
 function renderAnalysis() {

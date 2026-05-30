@@ -138,9 +138,9 @@ async function fetchPandaScoreLol() {
 
   const baseUrl = process.env.PANDASCORE_BASE_URL || "https://api.pandascore.co";
   const game = process.env.PANDASCORE_GAME || "lol";
-  const limit = clampNumber(process.env.PANDASCORE_MATCH_LIMIT, 10, 100, 50);
-  const lookbackDays = clampNumber(process.env.PANDASCORE_LOOKBACK_DAYS, 1, 60, 14);
-  const lookaheadDays = clampNumber(process.env.PANDASCORE_LOOKAHEAD_DAYS, 1, 90, 30);
+  const limit = clampNumber(process.env.PANDASCORE_MATCH_LIMIT, 10, 100, 80);
+  const lookbackDays = clampNumber(process.env.PANDASCORE_LOOKBACK_DAYS, 0, 60, 2);
+  const lookaheadDays = clampNumber(process.env.PANDASCORE_LOOKAHEAD_DAYS, 1, 90, 21);
   const now = new Date();
   const from = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
   const to = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000).toISOString();
@@ -163,6 +163,7 @@ async function fetchPandaScoreLol() {
   }
   const matches = await response.json();
   const tournaments = normalizePandaScoreMatches(matches, game);
+  await enrichWithPandaStandings(tournaments, baseUrl, token);
   return withMeta({ tournaments }, {
     mode: "realtime",
     source: "PandaScore 实时赛事 API",
@@ -174,7 +175,8 @@ async function fetchPandaScoreLol() {
       name: tournament.name,
       stage: tournament.stage,
       matchCount: tournament.matches.length,
-      teamCount: tournament.teams.length
+      teamCount: tournament.teams.length,
+      standingsSource: tournament.standingsSource || "schedule-derived"
     }))
   });
 }
@@ -230,7 +232,7 @@ function normalizePandaScoreMatches(matches, game) {
 
   return Array.from(groups.values())
     .map((group) => {
-      const teamList = Array.from(group.teams.values()).map(({ pandaId, ...team }) => team);
+      const teamList = Array.from(group.teams.values());
       return {
         id: group.descriptor.id,
         name: group.descriptor.name,
@@ -239,11 +241,12 @@ function normalizePandaScoreMatches(matches, game) {
         stage: group.descriptor.stage,
         season: group.descriptor.serie,
         source: `PandaScore 实时赛事 API · ${group.descriptor.league}`,
-        rules: {
-          format: "按当前赛事组内赛程自动统计",
-          advanceSlots: Math.min(4, Math.max(1, Math.ceil(teamList.length / 2))),
-          eliminationSlots: Math.min(2, Math.max(0, Math.floor(teamList.length / 4))),
-          tiebreakers: ["胜场", "小分净胜", "小分胜场", "官方排名规则以赛事官网为准"]
+        rules: competitionRules(group.descriptor, teamList.length),
+        standingsSource: "schedule-derived",
+        externalIds: {
+          pandascoreLeagueId: group.descriptor.leagueId,
+          pandascoreSerieId: group.descriptor.serieId,
+          pandascoreTournamentId: group.descriptor.tournamentId
         },
         teams: teamList,
         matches: group.matches.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
@@ -251,6 +254,90 @@ function normalizePandaScoreMatches(matches, game) {
     })
     .filter((tournament) => tournament.matches.length)
     .sort(comparePandaTournaments);
+}
+
+async function enrichWithPandaStandings(tournaments, baseUrl, token) {
+  await Promise.all(tournaments.map(async (tournament) => {
+    const tournamentId = tournament.externalIds?.pandascoreTournamentId;
+    if (!tournamentId) return;
+    try {
+      const endpoint = new URL(`/tournaments/${tournamentId}/standings`, baseUrl);
+      const response = await fetch(endpoint, {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token}`
+        }
+      });
+      if (!response.ok) {
+        tournament.standingsWarning = `官方积分榜接口返回 ${response.status}`;
+        return;
+      }
+      const rawStandings = await response.json();
+      const official = normalizePandaStandings(rawStandings, tournament);
+      if (official.length) {
+        tournament.officialStandings = official;
+        tournament.standingsSource = "official";
+      } else {
+        tournament.standingsWarning = "官方积分榜暂未返回可识别排名字段";
+      }
+    } catch (error) {
+      tournament.standingsWarning = `官方积分榜暂不可用：${error.message}`;
+    }
+  }));
+}
+
+function normalizePandaStandings(rawStandings, tournament) {
+  const rows = flattenStandings(rawStandings);
+  const byPandaId = new Map(tournament.teams.map((team) => [team.pandaId, team]));
+  const byName = new Map(tournament.teams.map((team) => [team.name.toLowerCase(), team]));
+  return rows.map((row, index) => {
+    const teamLike = row.team || row.opponent || row.participant || row.competitor || row;
+    const pandaId = teamLike?.id || row.team_id || row.opponent_id;
+    const name = teamLike?.acronym || teamLike?.name || row.team_name || row.name;
+    const team = byPandaId.get(pandaId) || byName.get(String(name || "").toLowerCase());
+    if (!team && !name) return null;
+    const wins = firstNumber(row.wins, row.win, row.victories, row.matches_won, row.total_wins);
+    const losses = firstNumber(row.losses, row.loss, row.defeats, row.matches_lost, row.total_losses);
+    const mapWins = firstNumber(row.map_wins, row.game_wins, row.for, row.points_for, row.score_for);
+    const mapLosses = firstNumber(row.map_losses, row.game_losses, row.against, row.points_against, row.score_against);
+    const differential = firstNumber(row.differential, row.diff, row.point_difference, row.score_diff);
+    return {
+      id: team?.id || `${slugify(name)}-${pandaId || index}`,
+      name: team?.name || name,
+      region: team?.region || teamLike?.location || "Global",
+      wins: wins ?? 0,
+      losses: losses ?? 0,
+      mapWins: mapWins ?? 0,
+      mapLosses: mapLosses ?? 0,
+      differential: differential ?? ((mapWins ?? 0) - (mapLosses ?? 0)),
+      remaining: firstNumber(row.remaining, row.matches_remaining) ?? 0,
+      played: firstNumber(row.played, row.matches_played) ?? ((wins ?? 0) + (losses ?? 0)),
+      rank: firstNumber(row.rank, row.position, row.place) ?? index + 1,
+      form: Array.isArray(row.form) ? row.form.slice(-5) : [],
+      official: true
+    };
+  }).filter(Boolean).sort((a, b) => a.rank - b.rank);
+}
+
+function flattenStandings(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (Array.isArray(item.standings)) return flattenStandings(item.standings);
+      if (Array.isArray(item.rows)) return flattenStandings(item.rows);
+      if (Array.isArray(item.teams)) return flattenStandings(item.teams);
+      return [item];
+    });
+  }
+  if (!value || typeof value !== "object") return [];
+  return flattenStandings(value.standings || value.rows || value.teams || []);
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function pandaCompetitionDescriptor(raw, game) {
@@ -267,11 +354,53 @@ function pandaCompetitionDescriptor(raw, game) {
   return {
     id,
     key: id,
+    tournamentId: raw.tournament?.id,
+    leagueId: raw.league?.id,
+    serieId: raw.serie?.id,
     league,
     serie,
     stage,
     region,
     name: [league, serie, stage].filter(uniqueLabel).join(" · ")
+  };
+}
+
+function competitionRules(descriptor, teamCount) {
+  const text = `${descriptor.league} ${descriptor.serie} ${descriptor.stage}`.toLowerCase();
+  if (text.includes("lpl") && (text.includes("ascend") || text.includes("登峰"))) {
+    return {
+      format: "LPL Split 2 登峰组",
+      advanceSlots: 4,
+      playInSlots: 4,
+      eliminationSlots: 0,
+      labels: {
+        advance: "季后赛直通区",
+        playIn: "骑士之路区"
+      },
+      tiebreakers: ["官方积分榜排名", "胜场", "小分/局分", "官方加赛规则"]
+    };
+  }
+  if (text.includes("lpl") && (text.includes("nirvana") || text.includes("涅槃"))) {
+    return {
+      format: "LPL Split 2 涅槃组",
+      advanceSlots: 0,
+      playInSlots: teamCount,
+      eliminationSlots: 0,
+      labels: {
+        playIn: "骑士之路竞争区"
+      },
+      tiebreakers: ["官方积分榜排名", "胜场", "小分/局分", "官方加赛规则"]
+    };
+  }
+  return {
+    format: "按官方赛事组展示，排名优先使用官方积分榜",
+    advanceSlots: Math.min(4, Math.max(1, Math.ceil(teamCount / 2))),
+    eliminationSlots: 0,
+    labels: {
+      advance: "排名前列",
+      watch: "观察区"
+    },
+    tiebreakers: ["官方积分榜排名", "胜场", "小分/局分", "赛事官网规则"]
   };
 }
 
@@ -386,6 +515,13 @@ function teamMap(tournament) {
 }
 
 function buildStandings(tournament, scenario = {}) {
+  if (tournament.officialStandings && !Object.keys(scenario).length) {
+    return tournament.officialStandings.map((row) => ({
+      ...row,
+      form: row.form || []
+    }));
+  }
+
   const teams = teamMap(tournament);
   const rows = tournament.teams.map((team) => ({
     id: team.id,
@@ -451,49 +587,62 @@ function buildStandings(tournament, scenario = {}) {
 }
 
 function qualificationStatus(tournament, standings) {
+  if (tournament.standingsSource !== "official") {
+    return standings.map((row) => ({
+      ...row,
+      maxWins: row.wins + row.remaining,
+      status: "近期赛程推算",
+      tone: "watch",
+      note: `${row.name} 的战绩来自当前接口返回的近期赛程，不等同于完整赛段官方积分榜。晋级结论需要结合官方积分榜和赛制。`
+    }));
+  }
+
+  if (tournament.rules?.labels?.playIn && !tournament.rules?.advanceSlots) {
+    return standings.map((row) => ({
+      ...row,
+      maxWins: row.wins + row.remaining,
+      status: tournament.rules.labels.playIn,
+      tone: "watch",
+      note: `${row.name} 当前官方排名第 ${row.rank}。${tournament.rules.format} 的晋级/骑士之路归属以官方最终排名和加赛规则为准。`
+    }));
+  }
+
   const advanceSlots = tournament.rules.advanceSlots;
-  const eliminationSlots = tournament.rules.eliminationSlots || 0;
+  const playInSlots = tournament.rules.playInSlots || 0;
+  const labels = tournament.rules.labels || {};
   return standings.map((row) => {
-    const maxWins = row.wins + row.remaining;
-    const teamsAbleToPass = standings.filter((other) => other.id !== row.id && other.wins + other.remaining >= row.wins).length;
-    const teamsAlreadyAhead = standings.filter((other) => other.id !== row.id && other.wins > maxWins).length;
-    let status = "悬念中";
+    let status = labels.watch || "观察区";
     let tone = "watch";
 
-    if (row.rank <= advanceSlots && teamsAbleToPass < advanceSlots) {
-      status = "已锁定晋级";
+    if (row.rank <= advanceSlots) {
+      status = labels.advance || "晋级区";
       tone = "safe";
-    } else if (teamsAlreadyAhead >= advanceSlots) {
-      status = "理论淘汰";
-      tone = "danger";
-    } else if (row.rank <= advanceSlots) {
-      status = "晋级主动权";
-      tone = "safe";
-    } else if (row.rank > standings.length - eliminationSlots) {
-      status = "高危边缘";
-      tone = "danger";
+    } else if (playInSlots && row.rank <= advanceSlots + playInSlots) {
+      status = labels.playIn || "附加赛区";
+      tone = "watch";
     }
 
     const target = standings[Math.max(0, advanceSlots - 1)];
-    const winsNeeded = Math.max(0, target.wins + 1 - row.wins);
+    const winGap = target ? row.wins - target.wins : 0;
     return {
       ...row,
-      maxWins,
+      maxWins: row.wins + row.remaining,
       status,
       tone,
-      note: `${row.name} 当前 ${row.wins}-${row.losses}，剩余 ${row.remaining} 场，最高可到 ${maxWins} 胜。${winsNeeded ? `保守估计还需要 ${winsNeeded} 场胜利冲击晋级线。` : "目前已处在晋级线附近。"}`
+      note: `${row.name} 当前官方排名第 ${row.rank}，战绩 ${row.wins}-${row.losses}。${target ? `与第 ${advanceSlots} 名胜场差为 ${winGap}。` : ""}具体晋级结论需结合 ${tournament.rules.format} 和官方小分/加赛规则。`
     };
   });
 }
 
 function keyMatches(tournament, standings) {
   const byId = new Map(standings.map((row) => [row.id, row]));
-  const advanceSlots = tournament.rules.advanceSlots;
+  const advanceSlots = tournament.rules.advanceSlots || Math.max(1, Math.ceil(standings.length / 2));
   return tournament.matches
     .filter((match) => match.status !== "finished")
     .map((match) => {
       const left = byId.get(match.teams[0]);
       const right = byId.get(match.teams[1]);
+      if (!left || !right) return null;
       const rankPressure = Math.abs(left.rank - advanceSlots) + Math.abs(right.rank - advanceSlots);
       const importance = rankPressure <= 2 ? "高" : rankPressure <= 5 ? "中" : "低";
       const tag = importance === "高" ? "晋级关键战" : importance === "中" ? "排名影响战" : "常规赛程";
@@ -507,6 +656,7 @@ function keyMatches(tournament, standings) {
         reason: `${left.name} 排名第 ${left.rank}，${right.name} 排名第 ${right.rank}。这场比赛会影响晋级线附近的胜场差和小分。`
       };
     })
+    .filter(Boolean)
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 }
 
@@ -515,12 +665,19 @@ function localAnalysis(tournament, scenario = {}) {
   const teams = qualificationStatus(tournament, standings);
   const matches = keyMatches(tournament, standings);
   const safe = teams.filter((team) => team.tone === "safe").slice(0, 3).map((team) => team.name).join("、") || "暂无";
-  const danger = teams.filter((team) => team.tone === "danger").slice(0, 3).map((team) => team.name).join("、") || "暂无";
+  const playIn = teams.filter((team) => team.status.includes("骑士") || team.status.includes("附加")).slice(0, 4).map((team) => team.name).join("、") || "暂无";
   const focus = matches[0];
+  const sourceText = tournament.standingsSource === "official"
+    ? "当前积分榜来自 PandaScore 官方 standings 接口。"
+    : "当前积分榜只根据接口返回的近期赛程推算，不代表完整赛段官方排名。";
+  const ruleText = tournament.rules?.labels?.advance
+    ? `${tournament.rules.format}：${tournament.rules.labels.advance}${tournament.rules.labels.playIn ? `，其余关注${tournament.rules.labels.playIn}` : ""}。`
+    : `${tournament.rules?.format || "赛制"}，具体晋级规则以官方公告为准。`;
   const summary = [
-    `${tournament.name} 当前晋级线为前 ${tournament.rules.advanceSlots} 名。${safe} 处在较有利位置，${danger} 需要尽快抢分。`,
-    focus ? `下一场重点关注 ${focus.left} vs ${focus.right}，系统判断为${focus.tag}，原因是双方排名和晋级线距离较近。` : "目前没有未结束比赛，晋级形势基本定型。",
-    "AI 建议优先观察胜场、小分和直接交手结果；当胜场接近时，一场 2:0 往往比 2:1 更能改变排序。"
+    `${tournament.name}。${sourceText}${ruleText}`,
+    tournament.rules.advanceSlots ? `目前 ${safe} 位于${tournament.rules.labels?.advance || "排名前列"}；${playIn !== "暂无" ? `${playIn} 位于${tournament.rules.labels?.playIn || "观察区"}。` : "其他队伍仍需结合后续赛程和小分判断。"}` : `当前所有队伍都需要结合${tournament.rules.labels?.playIn || "后续阶段"}规则判断。`,
+    focus ? `下一场重点关注 ${focus.left} vs ${focus.right}，原因是双方官方/推算排名接近关键分界。` : "目前没有未结束比赛，或当前接口窗口内没有后续赛程。",
+    "不要仅凭最近几场结果宣称锁定晋级或理论淘汰；需要同时看官方积分、赛制分区、小分和加赛规则。"
   ].join("\n");
   return { standings, teams, keyMatches: matches, summary };
 }
@@ -531,7 +688,9 @@ function compactContext(tournament, analysis) {
       name: tournament.name,
       game: tournament.game,
       stage: tournament.stage,
-      rules: tournament.rules
+      rules: tournament.rules,
+      standingsSource: tournament.standingsSource || "schedule-derived",
+      standingsWarning: tournament.standingsWarning || null
     },
     standings: analysis.standings,
     qualification: analysis.teams,
@@ -577,7 +736,7 @@ async function callLlm(provider, prompt, context) {
       messages: [
         {
           role: "system",
-          content: "你是电竞赛事数据分析 Agent。必须基于给定结构化数据回答，不要编造未提供的赛果。用中文，结论明确，适合网页展示。"
+          content: "你是面向中国观众的电竞赛事数据分析 Agent。必须基于给定结构化数据回答，不要编造未提供的赛果。若 standingsSource 不是 official，只能说明这是近期赛程推算，不能宣称锁定晋级或理论淘汰。分析晋级形势时必须同时考虑赛制 rules、官方排名、小分/局分和加赛规则；不确定时明确说明以官方公告为准。用中文，结论明确，适合网页展示。"
         },
         {
           role: "user",
@@ -608,7 +767,7 @@ async function handleApi(req, res) {
     const provider = url.searchParams.get("provider") || "local";
     if (provider !== "local") {
       try {
-        const llm = await callLlm(provider, "请输出晋级形势摘要、关键比赛、每个梯队的风险判断。", compactContext(tournament, analysis));
+        const llm = await callLlm(provider, "请输出晋级形势摘要、关键比赛、每个梯队的风险判断。若不是官方积分榜，必须避免使用锁定晋级、理论淘汰等确定性措辞。", compactContext(tournament, analysis));
         if (llm) analysis.summary = llm;
       } catch (error) {
         analysis.llmError = error.message;

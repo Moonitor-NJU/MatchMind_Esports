@@ -112,6 +112,8 @@ function sourceSummary() {
   if (meta.mode === "fallback") parts.push("已回退");
   if (meta.competitionCount != null) parts.push(`${meta.competitionCount} 个赛事组`);
   if (meta.matchCount != null) parts.push(`${meta.matchCount} 场`);
+  if (state.tournament?.standingsSource === "official") parts.push("官方积分榜");
+  if (state.tournament?.standingsSource === "schedule-derived") parts.push("近期赛程推算榜");
   if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);
   if (meta.warning) parts.push(meta.warning);
   return parts.join(" · ");
@@ -178,6 +180,9 @@ function renderAnalysis() {
     .filter(Boolean);
   if (state.analysis.llmError) {
     lines.push(`模型接口暂不可用，已使用本地规则引擎回答。错误：${state.analysis.llmError}`);
+  }
+  if (state.tournament.standingsWarning) {
+    lines.push(state.tournament.standingsWarning);
   }
   if (state.meta?.warning) {
     lines.push(state.meta.warning);

@@ -808,73 +808,217 @@ function teamName(tournament, id) {
 }
 
 function buildFocusStories(tournament, teams, phaseView) {
-  const text = `${tournament.name} ${tournament.stage} ${tournament.season}`.toLowerCase();
-  if (text.includes("lpl") && phaseView.type === "playoffs") return lplPlayoffFocus(tournament, phaseView);
-  if (text.includes("lck")) return lckRegularFocus(tournament, teams);
-  if (phaseView.type === "playoffs") return genericPlayoffFocus(tournament, phaseView);
-  return genericRegularFocus(tournament, teams);
+  const candidates = detectFocusCandidates(tournament, teams, phaseView)
+    .sort((a, b) => b.score - a.score || a.order - b.order);
+  return candidates.slice(0, 2).map(({ score, order, ...story }) => story);
 }
 
-function lplPlayoffFocus(tournament, phaseView) {
-  const nirvana = ["LGD", "TT", "EDG", "WE"];
-  const ascend = ["JDG", "TES", "AL", "BLG"];
-  const finished = phaseView.cards.filter((card) => card.winner);
+function detectFocusCandidates(tournament, teams, phaseView) {
+  const candidates = [];
+  const add = (candidate) => candidates.push({ order: candidates.length, ...candidate });
+  if (phaseView.type === "playoffs") {
+    playoffFocusCandidates(tournament, phaseView).forEach(add);
+  } else {
+    regularFocusCandidates(tournament, teams).forEach(add);
+  }
+  if (!candidates.length) {
+    add(fallbackFocus(tournament, teams, phaseView));
+  }
+  return candidates;
+}
+
+function playoffFocusCandidates(tournament, phaseView) {
+  const candidates = [];
   const upcoming = phaseView.cards.filter((card) => card.status !== "finished");
-  const upsetAttempts = phaseView.cards.filter((card) =>
-    nirvana.includes(card.left) || nirvana.includes(card.right)
-  );
-  const aliveNirvana = Array.from(new Set(upsetAttempts.flatMap((card) => [card.left, card.right]).filter((name) => nirvana.includes(name))));
+  const finished = phaseView.cards.filter((card) => card.winner);
+  const lowerNext = upcoming.find((card) => card.bracket === "败者组");
+  const upperNext = upcoming.find((card) => card.bracket === "胜者组");
   const next = upcoming[0];
-  return [{
-    tone: "hot",
-    headline: `LPL 季后赛进入双败淘汰：${aliveNirvana.join("、") || "涅槃组队伍"} 正在挑战登峰组强队的容错。`,
-    body: next
-      ? `下一场焦点是 ${next.left} vs ${next.right}。${next.bracket} BO${next.bestOf}，胜者继续保留更好的晋级路径，败者将承受败者组压力。`
-      : `当前已完成 ${finished.length} 场，后续重点看败者组是否继续出现涅槃组队伍反杀登峰组的剧情。`,
-    chips: ["LPL", "双败 BO5", "涅槃挑战登峰"]
-  }];
-}
+  const lowerTeams = new Set([
+    ...finished.filter((card) => card.bracket === "胜者组").map((card) => card.loser),
+    ...upcoming.filter((card) => card.bracket === "败者组").flatMap((card) => [card.left, card.right])
+  ].filter(Boolean));
+  const upsetTeams = underdogSurvivors(tournament, phaseView, lowerTeams);
 
-function lckRegularFocus(tournament, teams) {
-  const top = teams.slice().sort((a, b) => a.rank - b.rank).slice(0, 4);
-  const gen = teams.find((team) => team.name === "GEN");
-  const t1 = teams.find((team) => team.name === "T1");
-  const hle = teams.find((team) => team.name === "HLE");
-  const nextT1 = tournament.matches.find((match) => match.status !== "finished" && match.teams.some((id) => teamName(tournament, id) === "T1"));
-  const gap = gen && t1 ? t1.wins - gen.wins : null;
-  let body = `当前前四为 ${top.map((team) => `${team.rank}.${team.name}(${team.wins}-${team.losses})`).join("、")}。`;
-  if (gen && t1) {
-    body += ` GEN 与 T1 处在复活甲/前二种子竞争线附近，T1 当前胜场差 ${gap >= 0 ? "+" : ""}${gap}。`;
+  if (lowerNext) {
+    candidates.push({
+      score: 96,
+      tone: "hot",
+      headline: `${lowerNext.left} vs ${lowerNext.right} 是下一场败者组生死战。`,
+      body: `${lowerNext.bracket} BO${lowerNext.bestOf} 容错已经见底，胜者续命，败者基本结束本阶段；这比普通积分榜更能说明当前形势。`,
+      chips: ["败者组", "生死战", `BO${lowerNext.bestOf}`]
+    });
   }
-  if (nextT1) {
-    body += ` T1 下一场对 ${nextT1.teams.map((id) => teamName(tournament, id)).filter((name) => name !== "T1").join("")}，2:0 更有利于小分追赶，失利则会把主动权交给 GEN/HLE。`;
+
+  if (upsetTeams.length) {
+    candidates.push({
+      score: 90,
+      tone: "hot",
+      headline: `${upsetTeams.join("、")} 仍在淘汰赛路径中制造变数。`,
+      body: next ? `下一场 ${next.left} vs ${next.right} 会继续检验不同签表位置的队伍能否跨过当前对手。` : `当前已完成 ${finished.length} 场，后续重点看这些队伍能否在败者组或胜者组延续表现。`,
+      chips: ["爆冷线索", "签表压力"]
+    });
   }
-  return [{
-    tone: "hot",
-    headline: `${[hle?.name, gen?.name, t1?.name].filter(Boolean).join("、")} 围绕 LCK 前二复活甲展开拉扯。`,
-    body,
-    chips: ["LCK", "前二复活甲", "小分关键"]
-  }];
+
+  if (upperNext) {
+    candidates.push({
+      score: 82,
+      tone: "watch",
+      headline: `${upperNext.left} vs ${upperNext.right} 决定胜者组下一段主动权。`,
+      body: `胜者继续保留更高容错和更短晋级路径，败者会被迫转入败者组或承受更高淘汰风险。`,
+      chips: ["胜者组", "晋级路径", `BO${upperNext.bestOf}`]
+    });
+  }
+
+  if (!upcoming.length) {
+    candidates.push({
+      score: 70,
+      tone: "watch",
+      headline: `${tournament.name} 当前接口窗口内没有待赛场次。`,
+      body: `已完成 ${finished.length} 场，重点应回看胜负路径和后续官方签表更新，而不是积分榜。`,
+      chips: ["淘汰赛", "等待更新"]
+    });
+  }
+  return candidates;
 }
 
-function genericPlayoffFocus(tournament, phaseView) {
-  const next = phaseView.cards.find((card) => card.status !== "finished");
-  return [{
-    tone: "watch",
-    headline: `${tournament.name} 已进入淘汰赛阶段，积分榜不再是主要视角。`,
-    body: next ? `下一场 ${next.left} vs ${next.right} 决定 ${next.bracket} 后续路径。` : "当前接口窗口内没有未赛场次，重点查看已完成比赛的晋级路径。",
-    chips: ["淘汰赛", "晋级路径"]
-  }];
+function underdogSurvivors(tournament, phaseView, lowerTeams) {
+  const seedMap = seedOrderFromOpeningMatches(phaseView.cards);
+  const names = new Set();
+  for (const card of phaseView.cards) {
+    const leftSeed = seedMap.get(card.left);
+    const rightSeed = seedMap.get(card.right);
+    for (const name of [card.left, card.right]) {
+      const seed = seedMap.get(name);
+      if (seed && seed > Math.ceil(seedMap.size / 2) && (card.status !== "finished" || lowerTeams.has(name))) {
+        names.add(name);
+      }
+    }
+    if (card.winner && leftSeed && rightSeed) {
+      const winnerSeed = seedMap.get(card.winner);
+      const loserSeed = seedMap.get(card.loser);
+      if (winnerSeed > loserSeed) names.add(card.winner);
+    }
+  }
+  return Array.from(names).slice(0, 4);
 }
 
-function genericRegularFocus(tournament, teams) {
+function seedOrderFromOpeningMatches(cards) {
+  const firstRound = cards.filter((card) => card.round.toLowerCase().includes("quarter") || card.round.toLowerCase().includes("round 1"));
+  const names = [];
+  for (const card of firstRound.length ? firstRound : cards) {
+    for (const name of [card.left, card.right]) {
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  return new Map(names.map((name, index) => [name, index + 1]));
+}
+
+function regularFocusCandidates(tournament, teams) {
+  const candidates = [];
+  const sorted = teams.slice().sort((a, b) => a.rank - b.rank);
+  const advanceSlots = tournament.rules.advanceSlots || Math.min(6, Math.ceil(sorted.length / 2));
+  const topCut = closeCutRace(sorted, 2, "前二复活甲");
+  const playoffCut = closeCutRace(sorted, advanceSlots, tournament.rules.labels?.advance || "季后赛席位");
+  const nextDirect = nextDirectRankingMatch(tournament, sorted, advanceSlots);
+
+  if (topCut && sorted.length >= 4) {
+    candidates.push({
+      score: topCut.gap <= 1 ? 94 : 76,
+      tone: topCut.gap <= 1 ? "hot" : "watch",
+      headline: `${topCut.left.name}、${topCut.right.name} 正在争夺${topCut.label}。`,
+      body: `${topCut.left.name} 当前 ${topCut.left.wins}-${topCut.left.losses}，${topCut.right.name} 当前 ${topCut.right.wins}-${topCut.right.losses}，胜场差 ${topCut.gap}。若后续胜场接近，小分和直接交手会变成关键。`,
+      chips: ["前二竞争", "复活甲", "小分"]
+    });
+  }
+
+  if (playoffCut && playoffCut.slot !== 2) {
+    candidates.push({
+      score: playoffCut.gap <= 1 ? 88 : 70,
+      tone: playoffCut.gap <= 1 ? "hot" : "watch",
+      headline: `${playoffCut.left.name} 与 ${playoffCut.right.name} 卡在${playoffCut.label}分界线。`,
+      body: `第 ${playoffCut.slot} 名和第 ${playoffCut.slot + 1} 名胜场差 ${playoffCut.gap}，后续每一场都会影响席位归属；不能只看单场胜负，要同步看小分。`,
+      chips: ["晋级线", "卡位战"]
+    });
+  }
+
+  if (nextDirect) {
+    candidates.push({
+      score: 84,
+      tone: "hot",
+      headline: `${nextDirect.left.name} vs ${nextDirect.right.name} 是近期直接卡位战。`,
+      body: `双方排名第 ${nextDirect.left.rank} 和第 ${nextDirect.right.rank}，靠近关键分界；这类直接交手比普通赛程更能改变主动权。`,
+      chips: ["直接对话", "关键赛程"]
+    });
+  }
+
+  if (!candidates.length && sorted.length) {
+    const top = sorted.slice(0, 3);
+    candidates.push({
+      score: 50,
+      tone: "watch",
+      headline: `${tournament.name} 当前主要看官方积分榜稳定性。`,
+      body: `排名前列为 ${top.map((team) => `${team.name}(${team.wins}-${team.losses})`).join("、")}，后续焦点会随胜场差和剩余赛程自动切换。`,
+      chips: ["常规赛", "积分榜"]
+    });
+  }
+  return candidates;
+}
+
+function closeCutRace(sorted, slot, label) {
+  if (!slot || sorted.length <= slot) return null;
+  const left = sorted[slot - 1];
+  const right = sorted[slot];
+  if (!left || !right) return null;
+  return {
+    slot,
+    label,
+    left,
+    right,
+    gap: Math.abs(left.wins - right.wins)
+  };
+}
+
+function nextDirectRankingMatch(tournament, sorted, advanceSlots) {
+  const rankByName = new Map(sorted.map((team) => [team.name, team]));
+  const candidates = tournament.matches
+    .filter((match) => match.status !== "finished")
+    .map((match) => {
+      const left = rankByName.get(teamName(tournament, match.teams[0]));
+      const right = rankByName.get(teamName(tournament, match.teams[1]));
+      if (!left || !right) return null;
+      const rankGap = Math.abs(left.rank - right.rank);
+      const playoffPressure = Math.max(Math.abs(left.rank - advanceSlots), Math.abs(right.rank - advanceSlots));
+      const topPressure = Math.max(Math.abs(left.rank - 2), Math.abs(right.rank - 2));
+      const cutPressure = Math.min(playoffPressure, topPressure);
+      const bothNearPlayoff = left.rank <= advanceSlots + 2 && right.rank <= advanceSlots + 2;
+      const bothNearTop = left.rank <= 4 && right.rank <= 4;
+      return { left, right, rankGap, cutPressure, bothNearPlayoff, bothNearTop, startsAt: match.startsAt };
+    })
+    .filter(Boolean)
+    .filter((item) => item.cutPressure <= 1 || (item.rankGap <= 3 && (item.bothNearPlayoff || item.bothNearTop)))
+    .sort((a, b) => a.cutPressure - b.cutPressure || a.rankGap - b.rankGap || a.startsAt.localeCompare(b.startsAt));
+  return candidates[0] || null;
+}
+
+function fallbackFocus(tournament, teams, phaseView) {
+  if (phaseView.type === "playoffs") {
+    return {
+      score: 10,
+      tone: "watch",
+      headline: `${tournament.name} 已进入淘汰赛阶段。`,
+      body: "当前更应关注胜败者组路径、待战场次和淘汰风险，而不是积分榜。",
+      chips: ["淘汰赛", "晋级路径"]
+    };
+  }
   const top = teams.slice().sort((a, b) => a.rank - b.rank).slice(0, 3);
-  return [{
+  return {
+    score: 10,
     tone: "watch",
     headline: `${tournament.name} 当前仍以官方积分榜为主。`,
-    body: `排名前列为 ${top.map((team) => `${team.name}(${team.wins}-${team.losses})`).join("、")}，后续需要结合胜场、小分和官方加赛规则判断。`,
+    body: `排名前列为 ${top.map((team) => `${team.name}(${team.wins}-${team.losses})`).join("、")}，后续焦点会随赛程更新。`,
     chips: ["常规赛", "积分榜"]
-  }];
+  };
 }
 
 function compactContext(tournament, analysis) {

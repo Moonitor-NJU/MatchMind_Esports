@@ -1581,6 +1581,14 @@ async function handleApi(req, res) {
 function answerLocally(question, tournament, analysis) {
   const q = question.toLowerCase();
   const teams = analysis.teams;
+  const phaseCard = analysis.phaseView?.type === "playoffs" ? findRelevantPhaseCard(q, analysis.phaseView.cards || []) : null;
+  if (phaseCard) {
+    const stakeText = phaseCard.stake?.body ? `关键权益：${phaseCard.stake.body}` : phaseCard.impact;
+    const statusText = phaseCard.status === "finished"
+      ? `已结束，比分 ${phaseCard.left} ${phaseCard.score} ${phaseCard.right}。`
+      : `尚未开赛，时间 ${new Date(phaseCard.startsAt).toLocaleString("zh-CN", { hour12: false })}。`;
+    return `${phaseCard.left} vs ${phaseCard.right}：${statusText}${stakeText}`;
+  }
   const mentioned = teams.find((team) => q.includes(team.name.toLowerCase()) || q.includes(team.id.toLowerCase()));
   if (mentioned) {
     const next = tournament.matches.find((match) => match.status !== "finished" && match.teams.includes(mentioned.id));
@@ -1595,6 +1603,25 @@ function answerLocally(question, tournament, analysis) {
     return analysis.summary;
   }
   return `我已读取 ${tournament.name} 的赛程、积分和晋级规则。你可以问某支队伍的晋级条件、今晚哪场最关键，或者“如果某队赢了会怎样”。\n\n${analysis.summary}`;
+}
+
+function findRelevantPhaseCard(question, cards) {
+  const normalized = String(question || "").toLowerCase();
+  const stakeMatch = cards.find((card) => {
+    const terms = [
+      card.stake?.headline,
+      card.stake?.body,
+      ...(card.stake?.chips || [])
+    ].filter(Boolean).join(" ").toLowerCase();
+    return terms && ["msi", "门票", "权益", "意味着"].some((word) => normalized.includes(word)) &&
+      [card.left, card.right].some((name) => normalized.includes(String(name).toLowerCase()));
+  });
+  if (stakeMatch) return stakeMatch;
+  return cards.find((card) => {
+    const left = String(card.left || "").toLowerCase();
+    const right = String(card.right || "").toLowerCase();
+    return normalized.includes(left) && normalized.includes(right);
+  }) || null;
 }
 
 function serveStatic(req, res) {

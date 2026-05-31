@@ -32,7 +32,8 @@ const els = {
   scenarioResult: document.querySelector("#scenarioResult"),
   chatLog: document.querySelector("#chatLog"),
   chatForm: document.querySelector("#chatForm"),
-  questionInput: document.querySelector("#questionInput")
+  questionInput: document.querySelector("#questionInput"),
+  quickQuestions: document.querySelector("#quickQuestions")
 };
 
 function formatDate(value) {
@@ -98,6 +99,7 @@ function renderAll() {
   renderPhase();
   renderAnalysis();
   renderScenarioOptions();
+  renderQuickQuestions();
 }
 
 function renderHeader() {
@@ -271,6 +273,64 @@ function renderScenarioOptions() {
   }).join("");
 }
 
+function renderQuickQuestions() {
+  const questions = buildQuickQuestions();
+  els.quickQuestions.innerHTML = questions.map((item) => `
+    <button type="button" data-question="${escapeHtml(item.question)}">${escapeHtml(item.label)}</button>
+  `).join("");
+}
+
+function buildQuickQuestions() {
+  const questions = [
+    { label: "整体形势", question: `${state.tournament.name} 现在整体晋级形势如何？` },
+    { label: "关键比赛", question: `${state.tournament.name} 接下来哪场比赛最关键？` }
+  ];
+  if (state.tournament.rules?.phase === "playoffs") {
+    const stakeCard = state.analysis.phaseView?.cards?.find((card) => card.stake?.headline);
+    const next = state.tournament.matches.find((match) => match.status !== "finished");
+    if (stakeCard) {
+      questions.push({
+        label: "关键权益",
+        question: `${stakeCard.left} vs ${stakeCard.right} 这场 ${stakeCard.score} 的结果意味着什么？`
+      });
+    }
+    if (next) {
+      questions.push({
+        label: "下一场影响",
+        question: `${matchLabel(next)} 这场会影响哪些队伍的晋级路径？`
+      });
+    } else {
+      questions.push({
+        label: "后续签表",
+        question: `${state.tournament.name} 后续签表和晋级路径怎么看？`
+      });
+    }
+  } else {
+    const teams = state.analysis.teams || [];
+    const cutTeam = teams.find((team) => /观察区|骑士|晋级|季后赛|直通/.test(team.status || "")) || teams[0];
+    const leader = teams[0];
+    if (cutTeam) {
+      questions.push({
+        label: `${cutTeam.name} 条件`,
+        question: `${cutTeam.name} 的晋级条件是什么？`
+      });
+    }
+    if (leader && leader.name !== cutTeam?.name) {
+      questions.push({
+        label: `${leader.name} 主动权`,
+        question: `${leader.name} 现在还有主动权吗？`
+      });
+    }
+  }
+  return questions.slice(0, 4);
+}
+
+function matchLabel(match) {
+  const left = teamById(match.teams[0])?.name || "左侧队伍";
+  const right = teamById(match.teams[1])?.name || "右侧队伍";
+  return `${left} vs ${right}`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -345,8 +405,10 @@ els.chatForm.addEventListener("submit", (event) => {
   ask(els.questionInput.value);
 });
 
-document.querySelectorAll(".quick-questions button").forEach((button) => {
-  button.addEventListener("click", () => ask(button.dataset.question));
+els.quickQuestions.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  ask(button.dataset.question);
 });
 
 document.querySelectorAll(".score-buttons button").forEach((button) => {

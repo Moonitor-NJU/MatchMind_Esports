@@ -7,7 +7,7 @@ const state = {
   newsIndex: 0,
   newsTimer: null,
   filter: "all",
-  provider: "deepseek"
+  provider: "local"
 };
 
 const els = {

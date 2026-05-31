@@ -257,7 +257,7 @@ function pandaMatchEndpoints(baseUrl, game, limit, from, to) {
   const configured = csv(process.env.PANDASCORE_LEAGUE_IDS);
   const defaultFocus = (process.env.PANDASCORE_FOCUS || "cn-major").toLowerCase() === "all"
     ? []
-    : csv(process.env.PANDASCORE_DEFAULT_LEAGUE_IDS || "294,293,4197,5262");
+    : csv(process.env.PANDASCORE_DEFAULT_LEAGUE_IDS || "294,293,4197,5262,4198,5351");
   const leagueIds = configured.length ? configured : defaultFocus;
   const ids = leagueIds.length ? leagueIds : [null];
   return ids.map((leagueId) => {
@@ -622,6 +622,10 @@ function shouldKeepPandaCompetition(descriptor) {
     "league of legends champions korea",
     "lec",
     "league of legends emea championship",
+    "lcs",
+    "league championship series",
+    "lcp",
+    "league of legends championship pacific",
     "msi",
     "mid-season",
     "world championship",

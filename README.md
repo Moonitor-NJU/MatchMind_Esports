@@ -104,9 +104,9 @@ PANDASCORE_API_TOKEN=your_token
 PANDASCORE_GAME=lol
 
 # 可选：限制拉取某些联赛，多个 id 用英文逗号分隔。
-# 不填写时，cn-major 默认分别查询 LPL/LCK/LEC/EWC，避免全局一页数据被冷门赛事占满。
+# 不填写时，cn-major 默认分别查询 LPL/LCK/LEC/EWC/LCS/LCP，避免全局一页数据被冷门赛事占满。
 PANDASCORE_LEAGUE_IDS=
-PANDASCORE_DEFAULT_LEAGUE_IDS=294,293,4197,5262
+PANDASCORE_DEFAULT_LEAGUE_IDS=294,293,4197,5262,4198,5351
 
 # 可选：拉取最近/未来窗口。默认更偏向“今天和未来赛程”，避免旧比赛刷屏。
 PANDASCORE_LOOKBACK_DAYS=2
@@ -114,7 +114,7 @@ PANDASCORE_LOOKAHEAD_DAYS=45
 PANDASCORE_MATCH_LIMIT=100
 ```
 
-PandaScore 默认会返回全球范围内的 LOL 近期赛程。为了避免把 LPL、LCK、LEC、EWC 预选赛、外卡赛区等比赛混进同一个积分榜，后端会按 `league + serie + tournament` 自动拆成多个赛事组，网页下拉框中分别展示。默认 `PANDASCORE_FOCUS=cn-major`，优先保留中国观众更常关注的 LPL、LCK、LEC、MSI、全球总决赛、EWC、First Stand、德玛西亚杯等赛事。
+PandaScore 默认会返回全球范围内的 LOL 近期赛程。为了避免把 LPL、LCK、LEC、LCS、LCP、EWC 预选赛、外卡赛区等比赛混进同一个积分榜，后端会按 `league + serie + tournament` 自动拆成多个赛事组，网页下拉框中分别展示。默认 `PANDASCORE_FOCUS=cn-major`，优先保留中国观众更常关注的 LPL、LCK、LEC、LCS、LCP、MSI、全球总决赛、EWC、First Stand、德玛西亚杯等赛事。
 
 积分榜优先使用 PandaScore 的 tournament standings 官方接口。只有官方 standings 不可用时，才会回退为“近期赛程推算榜”，并且页面会明确标注，避免把最近几场结果误读成完整赛段晋级形势。LPL Split 2 登峰组会按“前 4 季后赛直通、后 4 骑士之路区”的规则展示状态。
 
@@ -141,7 +141,7 @@ NEWS_CACHE_TTL_MS=900000
 PANDASCORE_FOCUS=cn-major
 
 # 自定义保留关键词，命中 league/serie/tournament 任一字段即可
-PANDASCORE_INCLUDE_KEYWORDS=lpl,lck,lec,ewc,msi,world championship
+PANDASCORE_INCLUDE_KEYWORDS=lpl,lck,lec,lcs,lcp,ewc,msi,world championship
 
 # 自定义排除关键词
 PANDASCORE_EXCLUDE_KEYWORDS=academy,challengers,division 2

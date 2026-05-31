@@ -3,6 +3,9 @@ const state = {
   tournament: null,
   analysis: null,
   meta: null,
+  news: [],
+  newsIndex: 0,
+  newsTimer: null,
   filter: "all",
   provider: "deepseek"
 };
@@ -18,6 +21,8 @@ const els = {
   liveCount: document.querySelector("#liveCount"),
   keyCount: document.querySelector("#keyCount"),
   advanceSlots: document.querySelector("#advanceSlots"),
+  newsStage: document.querySelector("#newsStage"),
+  newsRail: document.querySelector("#newsRail"),
   focusStrip: document.querySelector("#focusStrip"),
   scheduleFilter: document.querySelector("#scheduleFilter"),
   matchList: document.querySelector("#matchList"),
@@ -68,6 +73,7 @@ async function loadTournaments(options = {}) {
   const data = await requestJson(`/api/tournaments${options.refresh ? "?refresh=1" : ""}`);
   state.tournaments = data.tournaments;
   state.meta = data.meta || null;
+  state.newsIndex = 0;
   els.tournamentSelect.innerHTML = state.tournaments
     .map((item) => `<option value="${item.id}">${item.name}</option>`)
     .join("");
@@ -75,6 +81,17 @@ async function loadTournaments(options = {}) {
     ? state.tournament.id
     : state.tournaments[0]?.id;
   await loadAnalysis(preferredId, options);
+  loadNews(options).catch(() => {
+    state.news = [];
+    renderNews();
+  });
+}
+
+async function loadNews(options = {}) {
+  const data = await requestJson(`/api/news${options.refresh ? "?refresh=1" : ""}`);
+  state.news = data.items || [];
+  state.newsIndex = 0;
+  renderNews();
 }
 
 async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
@@ -94,12 +111,65 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
 
 function renderAll() {
   renderHeader();
+  renderNews();
   renderFocus();
   renderSchedule();
   renderPhase();
   renderAnalysis();
   renderScenarioOptions();
   renderQuickQuestions();
+}
+
+function renderNews() {
+  const items = state.news.length ? state.news : fallbackNewsItems();
+  const active = items[state.newsIndex % items.length];
+  els.newsStage.innerHTML = `
+    <a class="news-hero" href="${escapeHtml(active.url)}" target="_blank" rel="noopener noreferrer">
+      <img src="${escapeHtml(active.image)}" alt="${escapeHtml(active.title)}" loading="lazy">
+      <div class="news-overlay">
+        <p class="eyebrow">Trending</p>
+        <h3>${escapeHtml(active.title)}</h3>
+        <span>${escapeHtml(active.source || "赛事新闻")} · ${active.publishedAt ? formatDate(active.publishedAt) : "最新"}</span>
+      </div>
+      <div class="news-controls" aria-hidden="true">
+        <button type="button" data-news-step="-1" title="上一条">‹</button>
+        <button type="button" data-news-step="1" title="下一条">›</button>
+      </div>
+      <div class="news-dots">
+        ${items.slice(0, 8).map((_, index) => `<i class="${index === state.newsIndex % items.length ? "active" : ""}"></i>`).join("")}
+      </div>
+    </a>
+  `;
+  els.newsRail.innerHTML = items.slice(0, 4).map((item, index) => `
+    <a class="news-tile ${index === state.newsIndex % items.length ? "active" : ""}" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" data-news-index="${index}">
+      <img src="${escapeHtml(item.image)}" alt="">
+      <div>
+        <strong>${escapeHtml(item.title)}</strong>
+        <span>${escapeHtml(item.source || "新闻源")}</span>
+      </div>
+    </a>
+  `).join("");
+  restartNewsTimer(items.length);
+}
+
+function restartNewsTimer(total) {
+  if (state.newsTimer) clearInterval(state.newsTimer);
+  if (total <= 1) return;
+  state.newsTimer = setInterval(() => {
+    state.newsIndex = (state.newsIndex + 1) % total;
+    renderNews();
+  }, 6000);
+}
+
+function fallbackNewsItems() {
+  const title = state.analysis?.focusStories?.[0]?.headline || "实时赛事焦点正在更新";
+  return [{
+    title,
+    source: "MatchMind",
+    url: "#analysis",
+    publishedAt: new Date().toISOString(),
+    image: "/news-placeholder.svg"
+  }];
 }
 
 function renderHeader() {
@@ -398,6 +468,16 @@ els.scheduleFilter.addEventListener("click", (event) => {
   state.filter = button.dataset.filter;
   els.scheduleFilter.querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
   renderSchedule();
+});
+
+els.newsStage.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  event.preventDefault();
+  const total = state.news.length || fallbackNewsItems().length;
+  const step = Number(button.dataset.newsStep || 0);
+  state.newsIndex = (state.newsIndex + step + total) % total;
+  renderNews();
 });
 
 els.chatForm.addEventListener("submit", (event) => {

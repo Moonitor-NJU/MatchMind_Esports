@@ -12,6 +12,8 @@ const ENV_FILE = path.join(ROOT, ".env");
 loadEnvFile();
 
 const LIVE_CACHE_TTL_MS = Number(process.env.LIVE_CACHE_TTL_MS || 5 * 60 * 1000);
+const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60 * 1000);
+let newsCache = null;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -20,7 +22,9 @@ const mimeTypes = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
-  ".jpg": "image/jpeg"
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp"
 };
 
 function readJson(file) {
@@ -1523,10 +1527,201 @@ function normalizeLlmFocusStory(story) {
   return { tone, headline, body, chips };
 }
 
+async function getNewsData({ refresh = false } = {}) {
+  const now = Date.now();
+  if (!refresh && newsCache && now - newsCache.cachedAt < NEWS_CACHE_TTL_MS) return newsCache.data;
+  try {
+    const items = await fetchNewsItems();
+    const data = {
+      items: items.length ? items : fallbackNews(),
+      meta: {
+        source: items.length ? "RSS/网页新闻源" : "本地赛事焦点",
+        updatedAt: new Date().toISOString()
+      }
+    };
+    newsCache = { cachedAt: now, data };
+    return data;
+  } catch (error) {
+    const data = {
+      items: fallbackNews(),
+      meta: {
+        source: "本地赛事焦点",
+        warning: `新闻源暂不可用：${error.message}`,
+        updatedAt: new Date().toISOString()
+      }
+    };
+    newsCache = { cachedAt: now, data };
+    return data;
+  }
+}
+
+async function fetchNewsItems() {
+  const sources = newsSources();
+  const batches = await Promise.allSettled(sources.map((source) => fetchNewsSource(source)));
+  const items = batches.flatMap((batch) => batch.status === "fulfilled" ? batch.value : []);
+  const deduped = [];
+  const seen = new Set();
+  for (const item of items.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
+    const key = normalizeUrl(item.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+    if (deduped.length >= 8) break;
+  }
+  return deduped;
+}
+
+function newsSources() {
+  const configured = csv(process.env.NEWS_FEEDS);
+  const urls = configured.length ? configured : [
+    "https://www.dexerto.com/league-of-legends/feed/",
+    "https://esports.gg/news/league-of-legends/feed/",
+    "https://www.esports.net/news/lol/feed/"
+  ];
+  return urls.map((url) => ({ url, source: sourceNameFromUrl(url) }));
+}
+
+async function fetchNewsSource(source) {
+  const text = await fetchText(source.url);
+  const items = parseRssItems(text, source);
+  const enriched = [];
+  for (const item of items.slice(0, 5)) {
+    const image = item.image || await fetchArticleImage(item.url).catch(() => null);
+    enriched.push({
+      ...item,
+      image: image || "/news-placeholder.svg"
+    });
+  }
+  return enriched;
+}
+
+async function fetchText(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        accept: "text/html,application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
+        "user-agent": "MatchMindEsports/1.0"
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseRssItems(xml, source) {
+  return Array.from(String(xml || "").matchAll(/<item\b[\s\S]*?<\/item>/gi))
+    .map((match) => parseRssItem(match[0], source))
+    .filter(Boolean);
+}
+
+function parseRssItem(itemXml, source) {
+  const title = decodeXml(stripTags(xmlValue(itemXml, "title"))).trim();
+  const url = decodeXml(xmlValue(itemXml, "link")).trim();
+  if (!title || !url) return null;
+  const description = decodeXml(xmlValue(itemXml, "description"));
+  const image = firstNonEmpty([
+    attrValue(itemXml, /<media:content\b[^>]*url=["']([^"']+)["']/i),
+    attrValue(itemXml, /<media:thumbnail\b[^>]*url=["']([^"']+)["']/i),
+    attrValue(itemXml, /<enclosure\b[^>]*url=["']([^"']+)["'][^>]*(?:type=["']image\/[^"']+["'])?/i),
+    attrValue(description, /<img\b[^>]*src=["']([^"']+)["']/i)
+  ]);
+  return {
+    title,
+    url,
+    image,
+    source: source.source,
+    publishedAt: parseNewsDate(xmlValue(itemXml, "pubDate") || xmlValue(itemXml, "dc:date"))
+  };
+}
+
+async function fetchArticleImage(url) {
+  const html = await fetchText(url);
+  return firstNonEmpty([
+    attrValue(html, /<meta\b[^>]*(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["']/i),
+    attrValue(html, /<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image["']/i),
+    attrValue(html, /<meta\b[^>]*(?:property|name)=["']twitter:image["'][^>]*content=["']([^"']+)["']/i)
+  ]);
+}
+
+function xmlValue(xml, tag) {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(xml || "").match(new RegExp(`<${escaped}\\b[^>]*>([\\s\\S]*?)<\\/${escaped}>`, "i"));
+  return match ? match[1].replace(/^<!\[CDATA\[|\]\]>$/g, "") : "";
+}
+
+function attrValue(text, pattern) {
+  const match = String(text || "").match(pattern);
+  return match ? decodeXml(match[1]) : "";
+}
+
+function firstNonEmpty(values) {
+  return values.find((value) => value && String(value).trim()) || "";
+}
+
+function stripTags(value) {
+  return String(value || "").replace(/<[^>]+>/g, "");
+}
+
+function decodeXml(value) {
+  return String(value || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&#39;", "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function parseNewsDate(value) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : new Date().toISOString();
+}
+
+function normalizeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return String(url || "");
+  }
+}
+
+function sourceNameFromUrl(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "赛事新闻";
+  }
+}
+
+function fallbackNews() {
+  return [
+    {
+      title: "实时赛事焦点正在更新",
+      source: "MatchMind",
+      url: "#analysis",
+      image: "/news-placeholder.svg",
+      publishedAt: new Date().toISOString()
+    }
+  ];
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/api/tournaments") {
     const data = await getTournamentData({ refresh: url.searchParams.get("refresh") === "1" });
+    sendJson(res, 200, data);
+    return;
+  }
+
+  if (url.pathname === "/api/news") {
+    const data = await getNewsData({ refresh: url.searchParams.get("refresh") === "1" });
     sendJson(res, 200, data);
     return;
   }

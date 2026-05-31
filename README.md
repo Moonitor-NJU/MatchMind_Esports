@@ -122,11 +122,11 @@ PandaScore 默认会返回全球范围内的 LOL 近期赛程。为了避免把 
 
 ## 赛事新闻轮播配置
 
-首页会通过 `/api/news` 拉取赛事新闻 RSS，解析标题、外链、发布时间，并尽量从 RSS 或文章 OpenGraph 中提取封面图，做成类似 B 站主推位的可点击轮播。默认新闻源偏向英文 LOL 电竞新闻；如果你的网络环境访问不稳定，可以在 `.env` 中替换为你能访问的 RSS：
+首页会通过 `/api/news` 拉取赛事新闻，解析标题、外链、发布时间，并尽量从 RSS、文章 OpenGraph 或 LoL Esports 官方新闻页中提取封面图，做成类似 B 站主推位的可点击轮播。默认新闻源优先使用 LoL Esports 官方新闻页；如果你的网络环境访问不稳定，可以在 `.env` 中替换为你能访问的 RSS/新闻页：
 
 ```bash
 # 多个 RSS 用英文逗号分隔
-NEWS_FEEDS=https://www.dexerto.com/league-of-legends/feed/,https://esports.gg/news/league-of-legends/feed/
+NEWS_FEEDS=https://lolesports.com/en-US/news,https://www.dexerto.com/league-of-legends/feed/
 
 # 可选：新闻缓存时间，默认 15 分钟
 NEWS_CACHE_TTL_MS=900000

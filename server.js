@@ -1574,16 +1574,17 @@ async function fetchNewsItems() {
 function newsSources() {
   const configured = csv(process.env.NEWS_FEEDS);
   const urls = configured.length ? configured : [
+    "https://lolesports.com/en-US/news",
     "https://www.dexerto.com/league-of-legends/feed/",
-    "https://esports.gg/news/league-of-legends/feed/",
-    "https://www.esports.net/news/lol/feed/"
+    "https://esports.gg/news/league-of-legends/feed/"
   ];
   return urls.map((url) => ({ url, source: sourceNameFromUrl(url) }));
 }
 
 async function fetchNewsSource(source) {
   const text = await fetchText(source.url);
-  const items = parseRssItems(text, source);
+  const rssItems = parseRssItems(text, source);
+  const items = rssItems.length ? rssItems : parseLoLEsportsNews(text, source);
   const enriched = [];
   for (const item of items.slice(0, 5)) {
     const image = item.image || await fetchArticleImage(item.url).catch(() => null);
@@ -1593,6 +1594,33 @@ async function fetchNewsSource(source) {
     });
   }
   return enriched;
+}
+
+function parseLoLEsportsNews(html, source) {
+  const items = [];
+  const seen = new Set();
+  const normalizedHtml = String(html || "")
+    .replace(/\\"/g, "\"")
+    .replaceAll("\\u0026", "&")
+    .replaceAll("\\/", "/");
+  const pattern = /"externalTitle":"((?:\\.|[^"\\])*)[\s\S]{0,1600}?"path":\{"__typename":"Slug","current":"((?:\\.|[^"\\])*)"[\s\S]{0,1200}?"displayedPublishDate":"((?:\\.|[^"\\])*)"[\s\S]{0,1600}?"url":"((?:\\.|[^"\\])*)"/g;
+  for (const match of normalizedHtml.matchAll(pattern)) {
+    const title = decodeJsString(match[1]);
+    const path = decodeJsString(match[2]);
+    const publishedAt = decodeJsString(match[3]);
+    const image = decodeJsString(match[4]);
+    const url = path.startsWith("http") ? path : `https://lolesports.com/en-US${path}`;
+    if (!title || !path || seen.has(url)) continue;
+    seen.add(url);
+    items.push({
+      title,
+      url,
+      image,
+      source: source.source,
+      publishedAt: parseNewsDate(publishedAt)
+    });
+  }
+  return items;
 }
 
 async function fetchText(url) {
@@ -1675,6 +1703,17 @@ function decodeXml(value) {
     .replaceAll("&quot;", "\"")
     .replaceAll("&#39;", "'")
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function decodeJsString(value) {
+  try {
+    return JSON.parse(`"${String(value || "").replace(/"/g, '\\"')}"`);
+  } catch {
+    return String(value || "")
+      .replaceAll("\\u0026", "&")
+      .replaceAll("\\/", "/")
+      .replace(/\\"/g, "\"");
+  }
 }
 
 function parseNewsDate(value) {

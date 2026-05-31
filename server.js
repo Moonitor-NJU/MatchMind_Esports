@@ -432,6 +432,19 @@ function competitionRules(descriptor, teamCount) {
       tiebreakers: ["官方积分榜排名", "胜场", "小分/局分", "官方加赛规则"]
     };
   }
+  if (text.includes("lec") && text.includes("playoff")) {
+    return {
+      format: "LEC Spring 季后赛败者组 BO5",
+      phase: "playoffs",
+      advanceSlots: 0,
+      eliminationSlots: 0,
+      labels: {
+        lower: "败者组淘汰线",
+        final: "后续签表"
+      },
+      tiebreakers: ["败者组 BO5", "胜者晋级下一轮", "败者淘汰", "官方签表更新"]
+    };
+  }
   return {
     format: "按官方赛事组展示，排名优先使用官方积分榜",
     phase: text.includes("playoff") || text.includes("qualifier") ? "playoffs" : "regular",
@@ -797,6 +810,7 @@ function bracketLabel(round = "") {
 }
 
 function playoffImpact(bracket, winner, loser) {
+  if (!winner && bracket === "败者组") return `${bracket}待战，胜者晋级下一轮，败者直接淘汰或结束本阶段。`;
   if (!winner) return `${bracket}待战，胜者继续冲击下一轮，败者将根据签表进入败者组或结束赛程。`;
   if (bracket === "胜者组") return `${winner} 留在胜者组推进，${loser} 掉入败者组，后续容错明显降低。`;
   if (bracket === "败者组") return `${winner} 续命晋级，${loser} 被淘汰或结束本阶段。`;
@@ -838,14 +852,14 @@ function playoffFocusCandidates(tournament, phaseView) {
     ...finished.filter((card) => card.bracket === "胜者组").map((card) => card.loser),
     ...upcoming.filter((card) => card.bracket === "败者组").flatMap((card) => [card.left, card.right])
   ].filter(Boolean));
-  const upsetTeams = underdogSurvivors(tournament, phaseView, lowerTeams);
+  const upsetTeams = hasSeedSignal(phaseView) ? underdogSurvivors(tournament, phaseView, lowerTeams) : [];
 
   if (lowerNext) {
     candidates.push({
       score: 96,
       tone: "hot",
       headline: `${lowerNext.left} vs ${lowerNext.right} 是下一场败者组生死战。`,
-      body: `${lowerNext.bracket} BO${lowerNext.bestOf} 容错已经见底，胜者续命，败者基本结束本阶段；这比普通积分榜更能说明当前形势。`,
+      body: `${lowerNext.bracket} BO${lowerNext.bestOf} 没有容错：胜者晋级下一轮，败者直接淘汰或结束本阶段。已完成场次里，${finishedSummary(finished) || "暂无明确晋级结果"}。`,
       chips: ["败者组", "生死战", `BO${lowerNext.bestOf}`]
     });
   }
@@ -880,6 +894,17 @@ function playoffFocusCandidates(tournament, phaseView) {
     });
   }
   return candidates;
+}
+
+function hasSeedSignal(phaseView) {
+  return phaseView.cards.some((card) => card.bracket === "胜者组") &&
+    phaseView.cards.length >= 4;
+}
+
+function finishedSummary(finished) {
+  return finished.slice(0, 3)
+    .map((card) => `${card.winner} 淘汰/击败 ${card.loser}（${card.score}）`)
+    .join("；");
 }
 
 function underdogSurvivors(tournament, phaseView, lowerTeams) {

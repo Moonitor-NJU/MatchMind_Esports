@@ -923,24 +923,30 @@ function regularFocusCandidates(tournament, teams) {
   const nextDirect = nextDirectRankingMatch(tournament, sorted, advanceSlots);
 
   if (topCut && sorted.length >= 4) {
-    const scenario = cutRaceScenario(tournament, topCut, sorted, 2);
+    const state = raceState(topCut);
+    const scenario = cutRaceScenario(tournament, topCut, sorted, 2, state);
     candidates.push({
-      score: topCut.gap <= 1 ? 94 : 76,
-      tone: topCut.gap <= 1 ? "hot" : "watch",
-      headline: `${topCut.left.name}、${topCut.right.name} 正在争夺${topCut.label}。`,
+      score: state.open ? (topCut.gap <= 1 ? 94 : 76) : 58,
+      tone: state.open ? "hot" : "watch",
+      headline: state.open
+        ? `${topCut.left.name}、${topCut.right.name} 正在争夺${topCut.label}。`
+        : `${topCut.label}格局已基本定型：${topCut.left.name} 暂压 ${topCut.right.name}。`,
       body: scenario,
-      chips: ["前二竞争", "复活甲", "小分"]
+      chips: state.open ? ["前二竞争", "复活甲", "小分"] : ["席位定型", "等待官方确认", "小分"]
     });
   }
 
   if (playoffCut && playoffCut.slot !== 2) {
-    const scenario = cutRaceScenario(tournament, playoffCut, sorted, playoffCut.slot);
+    const state = raceState(playoffCut);
+    const scenario = cutRaceScenario(tournament, playoffCut, sorted, playoffCut.slot, state);
     candidates.push({
-      score: playoffCut.gap <= 1 ? 88 : 70,
-      tone: playoffCut.gap <= 1 ? "hot" : "watch",
-      headline: `${playoffCut.left.name} 与 ${playoffCut.right.name} 卡在${playoffCut.label}分界线。`,
+      score: state.open ? (playoffCut.gap <= 1 ? 88 : 70) : 46,
+      tone: state.open ? "hot" : "watch",
+      headline: state.open
+        ? `${playoffCut.left.name} 与 ${playoffCut.right.name} 卡在${playoffCut.label}分界线。`
+        : `${playoffCut.label}分界线暂时稳定，${playoffCut.left.name} 领先 ${playoffCut.right.name}。`,
       body: scenario,
-      chips: ["晋级线", "卡位战"]
+      chips: state.open ? ["晋级线", "卡位战"] : ["席位观察", "官方排名"]
     });
   }
 
@@ -967,7 +973,7 @@ function regularFocusCandidates(tournament, teams) {
   return candidates;
 }
 
-function cutRaceScenario(tournament, race, sorted, slot) {
+function cutRaceScenario(tournament, race, sorted, slot, state = raceState(race)) {
   const contenders = nearbyContenders(sorted, slot);
   const scheduleLines = contenders
     .map((team) => teamScheduleLine(tournament, team))
@@ -978,7 +984,13 @@ function cutRaceScenario(tournament, race, sorted, slot) {
   const gapText = `${leader.name} 当前 ${leader.wins}-${leader.losses}，${chaser.name} 当前 ${chaser.wins}-${chaser.losses}，胜场差 ${race.gap}`;
   const scenarioLines = [];
 
-  if (race.gap === 0) {
+  if (!state.open) {
+    if (state.reason === "no_remaining") {
+      scenarioLines.push(`${leader.name} 和 ${chaser.name} 当前窗口内都没有剩余比赛，胜场关系已经无法通过本窗口赛程改变；后续只需等待官方最终排名/小分确认。`);
+    } else {
+      scenarioLines.push(`${chaser.name} 即使拿满当前窗口剩余胜场，也很难追上 ${leader.name}，这条分界线已经从“争夺”转为“确认排序”。`);
+    }
+  } else if (race.gap === 0) {
     scenarioLines.push(`${leader.name} 和 ${chaser.name} 同胜场，下一轮谁丢分都会把主动权让给对方；若都赢，排序大概率继续看小分/局分。`);
   } else if (race.gap === 1) {
     scenarioLines.push(`${chaser.name} 需要自己赢球，同时等待 ${leader.name} 丢一场，才能把竞争重新拉回同胜场；如果 ${leader.name} 也赢，${chaser.name} 至少还要继续追小分。`);
@@ -995,6 +1007,20 @@ function cutRaceScenario(tournament, race, sorted, slot) {
   return `${gapText}。${scenarioLines.join("")}`;
 }
 
+function raceState(race) {
+  const leftRemaining = race.left.remaining || 0;
+  const rightRemaining = race.right.remaining || 0;
+  const chaserMaxWins = race.right.wins + rightRemaining;
+  const leaderMinWins = race.left.wins;
+  if (!leftRemaining && !rightRemaining) {
+    return { open: false, reason: "no_remaining" };
+  }
+  if (chaserMaxWins < leaderMinWins) {
+    return { open: false, reason: "cannot_catch" };
+  }
+  return { open: true, reason: "live" };
+}
+
 function nearbyContenders(sorted, slot) {
   if (slot === 2) return sorted.slice(0, Math.min(sorted.length, 3));
   const start = Math.max(0, slot - 3);
@@ -1004,7 +1030,7 @@ function nearbyContenders(sorted, slot) {
 
 function teamScheduleLine(tournament, team) {
   const matches = upcomingMatchesForTeam(tournament, team.name).slice(0, 2);
-  if (!matches.length) return `${team.name} 当前窗口内暂无待赛，主动权取决于竞争对手赛果`;
+  if (!matches.length) return `${team.name} 当前窗口内暂无待赛`;
   return `${team.name} 接下来 ${matches.map((match) => `${formatShortDate(match.startsAt)} 对 ${opponentName(tournament, match, team.name)}`).join("、")}`;
 }
 

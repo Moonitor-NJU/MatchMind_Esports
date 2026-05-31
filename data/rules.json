@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "lpl-split2-playoffs",
+      "match": {
+        "league": ["lpl"],
+        "stage": ["playoff"]
+      },
+      "rules": {
+        "format": "LPL Split 2 季后赛双败 BO5",
+        "phase": "playoffs",
+        "advanceSlots": 0,
+        "eliminationSlots": 0,
+        "labels": {
+          "upper": "胜者组",
+          "lower": "败者组",
+          "final": "决赛路径"
+        },
+        "tiebreakers": ["双败淘汰赛签表", "胜者组晋级", "败者组续命", "BO5 胜负关系"]
+      },
+      "focus": {
+        "playoffMode": "double_elimination",
+        "prefer": ["lower_elimination", "upper_advantage", "underdog_path"],
+        "avoid": ["standings_table"]
+      }
+    },
+    {
+      "id": "lpl-split2-ascend",
+      "match": {
+        "league": ["lpl"],
+        "stage": ["ascend", "登峰"]
+      },
+      "rules": {
+        "format": "LPL Split 2 登峰组",
+        "phase": "regular",
+        "advanceSlots": 4,
+        "playInSlots": 4,
+        "eliminationSlots": 0,
+        "labels": {
+          "advance": "季后赛直通区",
+          "playIn": "骑士之路区"
+        },
+        "tiebreakers": ["官方积分榜排名", "胜场", "小分/局分", "官方加赛规则"]
+      },
+      "focus": {
+        "prefer": ["advance_cut", "playin_cut", "direct_match"]
+      }
+    },
+    {
+      "id": "lpl-split2-nirvana",
+      "match": {
+        "league": ["lpl"],
+        "stage": ["nirvana", "涅槃"]
+      },
+      "rules": {
+        "format": "LPL Split 2 涅槃组",
+        "phase": "regular",
+        "advanceSlots": 0,
+        "playInSlots": "all",
+        "eliminationSlots": 0,
+        "labels": {
+          "playIn": "骑士之路竞争区"
+        },
+        "tiebreakers": ["官方积分榜排名", "胜场", "小分/局分", "官方加赛规则"]
+      },
+      "focus": {
+        "prefer": ["playin_order", "direct_match"]
+      }
+    },
+    {
+      "id": "lec-spring-playoffs",
+      "match": {
+        "league": ["lec"],
+        "stage": ["playoff"]
+      },
+      "rules": {
+        "format": "LEC Spring 季后赛败者组 BO5",
+        "phase": "playoffs",
+        "advanceSlots": 0,
+        "eliminationSlots": 0,
+        "labels": {
+          "lower": "败者组淘汰线",
+          "final": "后续签表"
+        },
+        "tiebreakers": ["败者组 BO5", "胜者晋级下一轮", "败者淘汰", "官方签表更新"]
+      },
+      "focus": {
+        "playoffMode": "partial_lower_bracket",
+        "prefer": ["lower_elimination"],
+        "avoid": ["underdog_path_without_seed", "standings_table"]
+      }
+    },
+    {
+      "id": "lck-regular",
+      "match": {
+        "league": ["lck"],
+        "stage": ["rounds", "regular", "2026"]
+      },
+      "rules": {
+        "format": "LCK 常规赛官方积分榜",
+        "phase": "regular",
+        "advanceSlots": 6,
+        "byeSlots": 2,
+        "eliminationSlots": 0,
+        "labels": {
+          "bye": "前二复活甲/高顺位区",
+          "advance": "季后赛区",
+          "watch": "观察区"
+        },
+        "tiebreakers": ["官方积分榜排名", "胜场", "小分/局分", "直接交手", "官方加赛规则"]
+      },
+      "focus": {
+        "prefer": ["bye_cut", "advance_cut", "direct_match"],
+        "requireOpenRace": true
+      }
+    }
+  ]
+}

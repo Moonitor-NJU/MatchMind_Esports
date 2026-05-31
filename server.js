@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT || 3000);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_FILE = path.join(ROOT, "data", "tournaments.json");
+const RULES_FILE = path.join(ROOT, "data", "rules.json");
 const ENV_FILE = path.join(ROOT, ".env");
 
 loadEnvFile();
@@ -24,6 +25,14 @@ const mimeTypes = {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function readRules() {
+  try {
+    return readJson(RULES_FILE);
+  } catch (error) {
+    return { profiles: [] };
+  }
 }
 
 function loadEnvFile() {
@@ -390,6 +399,45 @@ function pandaCompetitionDescriptor(raw, game) {
 }
 
 function competitionRules(descriptor, teamCount) {
+  const profile = competitionProfile(descriptor);
+  if (profile) {
+    return materializeRules(profile.rules, teamCount, profile.id);
+  }
+  return fallbackCompetitionRules(descriptor, teamCount);
+}
+
+function competitionProfile(descriptor) {
+  const text = {
+    league: String(descriptor.league || "").toLowerCase(),
+    serie: String(descriptor.serie || "").toLowerCase(),
+    stage: String(descriptor.stage || "").toLowerCase(),
+    all: `${descriptor.league} ${descriptor.serie} ${descriptor.stage}`.toLowerCase()
+  };
+  return readRules().profiles.find((profile) => profileMatches(profile, text)) || null;
+}
+
+function profileMatches(profile, text) {
+  const match = profile.match || {};
+  return ["league", "serie", "stage"].every((field) => {
+    const values = match[field];
+    if (!values || !values.length) return true;
+    return values.some((value) => text[field].includes(String(value).toLowerCase()));
+  });
+}
+
+function materializeRules(rules, teamCount, profileId) {
+  const copy = JSON.parse(JSON.stringify(rules || {}));
+  if (copy.playInSlots === "all") copy.playInSlots = teamCount;
+  copy.profileId = profileId;
+  return copy;
+}
+
+function focusConfig(tournament) {
+  const profileId = tournament.rules?.profileId;
+  return readRules().profiles.find((profile) => profile.id === profileId)?.focus || {};
+}
+
+function fallbackCompetitionRules(descriptor, teamCount) {
   const text = `${descriptor.league} ${descriptor.serie} ${descriptor.stage}`.toLowerCase();
   if (text.includes("lpl") && text.includes("playoff")) {
     return {
@@ -843,6 +891,7 @@ function detectFocusCandidates(tournament, teams, phaseView) {
 
 function playoffFocusCandidates(tournament, phaseView) {
   const candidates = [];
+  const config = focusConfig(tournament);
   const upcoming = phaseView.cards.filter((card) => card.status !== "finished");
   const finished = phaseView.cards.filter((card) => card.winner);
   const lowerNext = upcoming.find((card) => card.bracket === "败者组");
@@ -852,7 +901,8 @@ function playoffFocusCandidates(tournament, phaseView) {
     ...finished.filter((card) => card.bracket === "胜者组").map((card) => card.loser),
     ...upcoming.filter((card) => card.bracket === "败者组").flatMap((card) => [card.left, card.right])
   ].filter(Boolean));
-  const upsetTeams = hasSeedSignal(phaseView) ? underdogSurvivors(tournament, phaseView, lowerTeams) : [];
+  const allowUnderdog = !config.avoid?.includes("underdog_path_without_seed") || hasSeedSignal(phaseView);
+  const upsetTeams = allowUnderdog && hasSeedSignal(phaseView) ? underdogSurvivors(tournament, phaseView, lowerTeams) : [];
 
   if (lowerNext) {
     candidates.push({
@@ -941,13 +991,14 @@ function seedOrderFromOpeningMatches(cards) {
 
 function regularFocusCandidates(tournament, teams) {
   const candidates = [];
+  const config = focusConfig(tournament);
   const sorted = teams.slice().sort((a, b) => a.rank - b.rank);
   const advanceSlots = tournament.rules.advanceSlots || Math.min(6, Math.ceil(sorted.length / 2));
-  const topCut = closeCutRace(sorted, 2, "前二复活甲");
+  const topCut = closeCutRace(sorted, tournament.rules.byeSlots || 2, tournament.rules.labels?.bye || "前二复活甲");
   const playoffCut = closeCutRace(sorted, advanceSlots, tournament.rules.labels?.advance || "季后赛席位");
   const nextDirect = nextDirectRankingMatch(tournament, sorted, advanceSlots);
 
-  if (topCut && sorted.length >= 4) {
+  if (topCut && sorted.length >= 4 && shouldUseFocus(config, "bye_cut")) {
     const state = raceState(topCut);
     const scenario = cutRaceScenario(tournament, topCut, sorted, 2, state);
     candidates.push({
@@ -961,11 +1012,11 @@ function regularFocusCandidates(tournament, teams) {
     });
   }
 
-  if (playoffCut && playoffCut.slot !== 2) {
+  if (playoffCut && playoffCut.slot !== 2 && shouldUseFocus(config, "advance_cut")) {
     const state = raceState(playoffCut);
     const scenario = cutRaceScenario(tournament, playoffCut, sorted, playoffCut.slot, state);
     candidates.push({
-      score: state.open ? (playoffCut.gap <= 1 ? 88 : 70) : 46,
+      score: state.open ? (playoffCut.gap <= 1 ? 88 : 70) : 56,
       tone: state.open ? "hot" : "watch",
       headline: state.open
         ? `${playoffCut.left.name} 与 ${playoffCut.right.name} 卡在${playoffCut.label}分界线。`
@@ -975,7 +1026,7 @@ function regularFocusCandidates(tournament, teams) {
     });
   }
 
-  if (nextDirect) {
+  if (nextDirect && shouldUseFocus(config, "direct_match")) {
     candidates.push({
       score: 84,
       tone: "hot",
@@ -998,12 +1049,17 @@ function regularFocusCandidates(tournament, teams) {
   return candidates;
 }
 
+function shouldUseFocus(config, key) {
+  if (!config.prefer || !config.prefer.length) return true;
+  return config.prefer.includes(key);
+}
+
 function cutRaceScenario(tournament, race, sorted, slot, state = raceState(race)) {
   const contenders = nearbyContenders(sorted, slot);
   const scheduleLines = contenders
     .map((team) => teamScheduleLine(tournament, team))
     .filter(Boolean);
-  const direct = directMatchAmong(tournament, contenders);
+  const direct = directMatchAmong(tournament, contenders, slot);
   const leader = race.left;
   const chaser = race.right;
   const gapText = `${leader.name} 当前 ${leader.wins}-${leader.losses}，${chaser.name} 当前 ${chaser.wins}-${chaser.losses}，胜场差 ${race.gap}`;
@@ -1065,14 +1121,20 @@ function upcomingMatchesForTeam(tournament, team) {
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 }
 
-function directMatchAmong(tournament, teams) {
+function directMatchAmong(tournament, teams, slot) {
   const names = new Set(teams.map((team) => team.name));
+  const rankByName = new Map(teams.map((team) => [team.name, team.rank]));
   return tournament.matches
     .filter((match) => match.status !== "finished")
     .map((match) => {
       const left = teamName(tournament, match.teams[0]);
       const right = teamName(tournament, match.teams[1]);
       if (!names.has(left) || !names.has(right)) return null;
+      const leftRank = rankByName.get(left);
+      const rightRank = rankByName.get(right);
+      const crossesCut = (leftRank <= slot && rightRank > slot) || (rightRank <= slot && leftRank > slot);
+      const touchesCut = crossesCut && Math.max(leftRank, rightRank) <= slot + 1 && Math.min(leftRank, rightRank) >= Math.max(1, slot - 1);
+      if (!touchesCut) return null;
       return { left: teams.find((team) => team.name === left), right: teams.find((team) => team.name === right), startsAt: match.startsAt };
     })
     .filter(Boolean)
@@ -1124,10 +1186,16 @@ function nextDirectRankingMatch(tournament, sorted, advanceSlots) {
       const cutPressure = Math.min(playoffPressure, topPressure);
       const bothNearPlayoff = left.rank <= advanceSlots + 2 && right.rank <= advanceSlots + 2;
       const bothNearTop = left.rank <= 4 && right.rank <= 4;
-      return { left, right, rankGap, cutPressure, bothNearPlayoff, bothNearTop, startsAt: match.startsAt };
+      const crossesPlayoffCut = (left.rank <= advanceSlots && right.rank > advanceSlots) ||
+        (right.rank <= advanceSlots && left.rank > advanceSlots);
+      const crossesTopCut = (left.rank <= 2 && right.rank > 2) ||
+        (right.rank <= 2 && left.rank > 2);
+      const touchesPlayoffCut = crossesPlayoffCut && Math.max(left.rank, right.rank) <= advanceSlots + 1;
+      const touchesTopCut = crossesTopCut && Math.max(left.rank, right.rank) <= 3;
+      return { left, right, rankGap, cutPressure, bothNearPlayoff, bothNearTop, touchesPlayoffCut, touchesTopCut, startsAt: match.startsAt };
     })
     .filter(Boolean)
-    .filter((item) => item.cutPressure <= 1 || (item.rankGap <= 3 && (item.bothNearPlayoff || item.bothNearTop)))
+    .filter((item) => item.rankGap <= 3 && (item.touchesPlayoffCut || item.touchesTopCut || item.bothNearTop))
     .sort((a, b) => a.cutPressure - b.cutPressure || a.rankGap - b.rankGap || a.startsAt.localeCompare(b.startsAt));
   return candidates[0] || null;
 }

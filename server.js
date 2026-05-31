@@ -168,7 +168,9 @@ async function fetchPandaScoreLol() {
   }));
   const matches = dedupeMatches(batches.flat());
   const tournaments = normalizePandaScoreMatches(matches, game);
+  await enrichWithPandaTournamentMatches(tournaments, baseUrl, token, game);
   await enrichWithPandaStandings(tournaments, baseUrl, token);
+  finalizeTournamentData(tournaments);
   return withMeta({ tournaments }, {
     mode: "realtime",
     source: "PandaScore 实时赛事 API",
@@ -187,6 +189,64 @@ async function fetchPandaScoreLol() {
       standingsSource: tournament.standingsSource || "schedule-derived"
     }))
   });
+}
+
+async function enrichWithPandaTournamentMatches(tournaments, baseUrl, token, game) {
+  await Promise.all(tournaments
+    .filter((tournament) => tournament.rules?.phase === "playoffs")
+    .map(async (tournament) => {
+      const tournamentId = tournament.externalIds?.pandascoreTournamentId;
+      if (!tournamentId) return;
+      try {
+        const endpoint = new URL(`/tournaments/${tournamentId}/matches`, baseUrl);
+        endpoint.searchParams.set("sort", "begin_at");
+        endpoint.searchParams.set("per_page", "100");
+        const response = await fetch(endpoint, {
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${token}`
+          }
+        });
+        if (!response.ok) {
+          tournament.bracketWarning = `完整签表接口返回 ${response.status}`;
+          return;
+        }
+        const matches = await response.json();
+        mergePandaMatchesIntoTournament(tournament, matches, game);
+      } catch (error) {
+        tournament.bracketWarning = `完整签表暂不可用：${error.message}`;
+      }
+    }));
+}
+
+function mergePandaMatchesIntoTournament(tournament, rawMatches, game) {
+  const colors = ["#0f9f87", "#2563eb", "#e8475b", "#d97706", "#7c3aed", "#111827", "#0891b2", "#db2777"];
+  const teamMapById = new Map(tournament.teams.map((team) => [team.id, team]));
+  const matchMap = new Map(tournament.matches.map((match) => [match.id, match]));
+  for (const raw of Array.isArray(rawMatches) ? rawMatches : []) {
+    const descriptor = pandaCompetitionDescriptor(raw, game);
+    if (descriptor.id !== tournament.id) continue;
+    const opponents = Array.isArray(raw.opponents) ? raw.opponents.slice(0, 2) : [];
+    if (opponents.length < 2) continue;
+    const left = normalizePandaTeam(opponents[0].opponent, teamMapById, colors);
+    const right = normalizePandaTeam(opponents[1].opponent, teamMapById, colors);
+    if (!left || !right) continue;
+    const result = normalizePandaResult(raw, left.pandaId, right.pandaId);
+    matchMap.set(`ps-${raw.id}`, {
+      id: `ps-${raw.id}`,
+      startsAt: raw.begin_at || raw.scheduled_at || raw.original_scheduled_at || new Date().toISOString(),
+      status: normalizePandaStatus(raw.status),
+      round: raw.name || raw.match_type || descriptor.stage,
+      bestOf: Number(raw.number_of_games || raw.games?.length || 3),
+      league: descriptor.league,
+      serie: descriptor.serie,
+      stage: descriptor.stage,
+      teams: [left.id, right.id],
+      result
+    });
+  }
+  tournament.teams = Array.from(teamMapById.values());
+  tournament.matches = Array.from(matchMap.values()).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 }
 
 function pandaMatchEndpoints(baseUrl, game, limit, from, to) {
@@ -310,6 +370,7 @@ async function enrichWithPandaStandings(tournaments, baseUrl, token) {
       if (official.length) {
         tournament.officialStandings = official;
         tournament.standingsSource = "official";
+        mergeStandingTeamsIntoTournament(tournament, official);
       } else {
         tournament.standingsWarning = "官方积分榜暂未返回可识别排名字段";
       }
@@ -317,6 +378,42 @@ async function enrichWithPandaStandings(tournaments, baseUrl, token) {
       tournament.standingsWarning = `官方积分榜暂不可用：${error.message}`;
     }
   }));
+}
+
+function mergeStandingTeamsIntoTournament(tournament, standings) {
+  const existing = new Map(tournament.teams.map((team) => [team.id, team]));
+  const colors = ["#0f9f87", "#2563eb", "#e8475b", "#d97706", "#7c3aed", "#111827", "#0891b2", "#db2777"];
+  for (const row of standings) {
+    if (existing.has(row.id)) continue;
+    existing.set(row.id, {
+      id: row.id,
+      name: row.name,
+      region: row.region || "Global",
+      color: colors[existing.size % colors.length]
+    });
+  }
+  tournament.teams = Array.from(existing.values());
+}
+
+function finalizeTournamentData(tournaments) {
+  for (const tournament of tournaments) {
+    if (tournament.officialStandings) {
+      tournament.officialStandings = tournament.officialStandings.map((row) => ({
+        ...row,
+        remaining: upcomingMatchesForTeam(tournament, row.name).length
+      }));
+    }
+    if (tournament.rules?.phase === "playoffs") {
+      const matchTeams = new Set(tournament.matches.flatMap((match) => match.teams));
+      tournament.waitingTeams = tournament.teams
+        .filter((team) => !matchTeams.has(team.id))
+        .map((team) => team.name);
+      if (tournament.waitingTeams.length) {
+        const warning = `当前 PandaScore 比赛窗口未包含 ${tournament.waitingTeams.join("、")} 的具体对阵，可能是已在更高轮次等待或完整签表尚未返回。`;
+        tournament.bracketWarning = tournament.bracketWarning ? `${tournament.bracketWarning}；${warning}` : warning;
+      }
+    }
+  }
 }
 
 function normalizePandaStandings(rawStandings, tournament) {
@@ -843,6 +940,8 @@ function buildPlayoffView(tournament) {
     subtitle: tournament.rules?.format || "淘汰赛签表",
     completedCount: finished.length,
     upcomingCount: upcoming.length,
+    waitingTeams: tournament.waitingTeams || [],
+    warning: tournament.bracketWarning || null,
     cards
   };
 }
@@ -909,7 +1008,7 @@ function playoffFocusCandidates(tournament, phaseView) {
       score: 96,
       tone: "hot",
       headline: `${lowerNext.left} vs ${lowerNext.right} 是下一场败者组生死战。`,
-      body: `${lowerNext.bracket} BO${lowerNext.bestOf} 没有容错：胜者晋级下一轮，败者直接淘汰或结束本阶段。已完成场次里，${finishedSummary(finished) || "暂无明确晋级结果"}。`,
+      body: `${lowerNext.bracket} BO${lowerNext.bestOf} 没有容错：胜者晋级下一轮，败者直接淘汰或结束本阶段。当前签表已完成：${finishedSummary(finished) || "暂无明确晋级结果"}。`,
       chips: ["败者组", "生死战", `BO${lowerNext.bestOf}`]
     });
   }
@@ -953,8 +1052,12 @@ function hasSeedSignal(phaseView) {
 
 function finishedSummary(finished) {
   return finished.slice(0, 3)
-    .map((card) => `${card.winner} 淘汰/击败 ${card.loser}（${card.score}）`)
+    .map((card) => `${card.left} ${card.score} ${card.right}：${stripTrailingPunctuation(card.impact)}`)
     .join("；");
+}
+
+function stripTrailingPunctuation(value) {
+  return String(value || "").replace(/[。；;,.，]+$/g, "");
 }
 
 function underdogSurvivors(tournament, phaseView, lowerTeams) {
@@ -1056,12 +1159,13 @@ function shouldUseFocus(config, key) {
 
 function cutRaceScenario(tournament, race, sorted, slot, state = raceState(race)) {
   const contenders = nearbyContenders(sorted, slot);
-  const scheduleLines = contenders
-    .map((team) => teamScheduleLine(tournament, team))
-    .filter(Boolean);
   const direct = directMatchAmong(tournament, contenders, slot);
   const leader = race.left;
   const chaser = race.right;
+  const scheduleTeams = state.open ? [leader, chaser] : [];
+  const scheduleLines = uniqueTeams(scheduleTeams)
+    .map((team) => teamScheduleLine(tournament, team))
+    .filter(Boolean);
   const gapText = `${leader.name} 当前 ${leader.wins}-${leader.losses}，${chaser.name} 当前 ${chaser.wins}-${chaser.losses}，胜场差 ${race.gap}`;
   const scenarioLines = [];
 
@@ -1072,9 +1176,21 @@ function cutRaceScenario(tournament, race, sorted, slot, state = raceState(race)
       scenarioLines.push(`${chaser.name} 即使拿满当前窗口剩余胜场，也很难追上 ${leader.name}，这条分界线已经从“争夺”转为“确认排序”。`);
     }
   } else if (race.gap === 0) {
-    scenarioLines.push(`${leader.name} 和 ${chaser.name} 同胜场，下一轮谁丢分都会把主动权让给对方；若都赢，排序大概率继续看小分/局分。`);
+    const leaderRemaining = leader.remaining || 0;
+    const chaserRemaining = chaser.remaining || 0;
+    if (leaderRemaining && !chaserRemaining) {
+      scenarioLines.push(`${leader.name} 还有 ${leaderRemaining} 场，赢下下一场就能把同胜场压力甩给 ${chaser.name}；如果输球，排序仍会被小分/局分拖住。`);
+    } else if (!leaderRemaining && chaserRemaining) {
+      scenarioLines.push(`${chaser.name} 还有 ${chaserRemaining} 场，赢球就能追到同胜场甚至改变分界线主动权；输球则基本把位置让给 ${leader.name}。`);
+    } else {
+      scenarioLines.push(`${leader.name} 和 ${chaser.name} 同胜场，下一轮谁丢分都会把主动权让给对方；若都赢，排序大概率继续看小分/局分。`);
+    }
   } else if (race.gap === 1) {
-    scenarioLines.push(`${chaser.name} 需要自己赢球，同时等待 ${leader.name} 丢一场，才能把竞争重新拉回同胜场；如果 ${leader.name} 也赢，${chaser.name} 至少还要继续追小分。`);
+    if (!(leader.remaining || 0) && (chaser.remaining || 0)) {
+      scenarioLines.push(`${chaser.name} 还有 ${chaser.remaining} 场，下一场赢球可以把差距追到同胜场，随后排序会看小分/局分；输球则很难再撼动 ${leader.name}。`);
+    } else {
+      scenarioLines.push(`${chaser.name} 需要自己赢球，同时等待 ${leader.name} 丢一场，才能把竞争重新拉回同胜场；如果 ${leader.name} 也赢，${chaser.name} 至少还要继续追小分。`);
+    }
   } else {
     scenarioLines.push(`${chaser.name} 已经落后 ${race.gap} 个胜场，短期内必须连续拿分，同时等待前面的队伍连续失误。`);
   }
@@ -1086,6 +1202,15 @@ function cutRaceScenario(tournament, race, sorted, slot, state = raceState(race)
     scenarioLines.push(`近期重点赛程：${scheduleLines.join("；")}。`);
   }
   return `${gapText}。${scenarioLines.join("")}`;
+}
+
+function uniqueTeams(teams) {
+  const seen = new Set();
+  return teams.filter((team) => {
+    if (!team || seen.has(team.name)) return false;
+    seen.add(team.name);
+    return true;
+  });
 }
 
 function raceState(race) {
@@ -1104,14 +1229,14 @@ function raceState(race) {
 
 function nearbyContenders(sorted, slot) {
   if (slot === 2) return sorted.slice(0, Math.min(sorted.length, 3));
-  const start = Math.max(0, slot - 3);
-  const end = Math.min(sorted.length, slot + 2);
+  const start = Math.max(0, slot - 2);
+  const end = Math.min(sorted.length, slot + 1);
   return sorted.slice(start, end);
 }
 
 function teamScheduleLine(tournament, team) {
   const matches = upcomingMatchesForTeam(tournament, team.name).slice(0, 2);
-  if (!matches.length) return `${team.name} 当前窗口内暂无待赛`;
+  if (!matches.length) return null;
   return `${team.name} 接下来 ${matches.map((match) => `${formatShortDate(match.startsAt)} 对 ${opponentName(tournament, match, team.name)}`).join("、")}`;
 }
 
@@ -1228,7 +1353,9 @@ function compactContext(tournament, analysis) {
       stage: tournament.stage,
       rules: tournament.rules,
       standingsSource: tournament.standingsSource || "schedule-derived",
-      standingsWarning: tournament.standingsWarning || null
+      standingsWarning: tournament.standingsWarning || null,
+      bracketWarning: tournament.bracketWarning || null,
+      waitingTeams: tournament.waitingTeams || []
     },
     standings: analysis.standings,
     qualification: analysis.teams,

@@ -216,6 +216,8 @@ function renderPlayoffPhase(phase) {
       <strong>${escapeHtml(phase.subtitle || "淘汰赛签表")}</strong>
       <span>已完成 ${phase.completedCount || 0} 场 · 待赛 ${phase.upcomingCount || 0} 场</span>
     </div>
+    ${phase.warning ? `<div class="phase-summary warning"><strong>签表提示</strong><span>${escapeHtml(phase.warning)}</span></div>` : ""}
+    ${phase.waitingTeams?.length ? `<div class="phase-summary"><strong>等待后续签表</strong><span>${phase.waitingTeams.map(escapeHtml).join("、")}</span></div>` : ""}
     ${(phase.cards || []).map((card) => `
       <article class="phase-card ${card.status}">
         <div class="phase-meta">
@@ -242,6 +244,9 @@ function renderAnalysis() {
   }
   if (state.tournament.standingsWarning) {
     lines.push(state.tournament.standingsWarning);
+  }
+  if (state.tournament.bracketWarning) {
+    lines.push(state.tournament.bracketWarning);
   }
   if (state.meta?.warning) {
     lines.push(state.meta.warning);

@@ -499,6 +499,11 @@ td {
   border-radius: 8px;
 }
 
+.phase-summary.warning {
+  border-color: #fed7aa;
+  background: #fffbeb;
+}
+
 .phase-summary span {
   color: var(--muted);
 }

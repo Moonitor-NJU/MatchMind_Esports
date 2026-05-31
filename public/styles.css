@@ -572,6 +572,17 @@ td {
   line-height: 1.6;
 }
 
+.phase-stake {
+  grid-column: 2;
+  width: fit-content;
+  padding: 4px 9px;
+  border-radius: 8px;
+  color: #7c2d12;
+  background: #ffedd5;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .analysis-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);

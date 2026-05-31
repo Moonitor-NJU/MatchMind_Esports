@@ -229,6 +229,7 @@ function renderPlayoffPhase(phase) {
           <strong>${escapeHtml(card.left)} vs ${escapeHtml(card.right)}</strong>
           <span>${escapeHtml(card.score)}</span>
         </div>
+        ${card.stake?.headline ? `<div class="phase-stake">${escapeHtml(card.stake.headline)}</div>` : ""}
         <p>${escapeHtml(card.impact)}</p>
       </article>
     `).join("")}

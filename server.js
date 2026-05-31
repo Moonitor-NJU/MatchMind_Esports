@@ -919,7 +919,7 @@ function buildPlayoffView(tournament) {
     const result = match.result;
     const winner = result ? (result.left > result.right ? left : right) : null;
     const loser = result ? (result.left > result.right ? right : left) : null;
-    return {
+    const card = {
       id: match.id,
       startsAt: match.startsAt,
       round: match.round,
@@ -933,6 +933,12 @@ function buildPlayoffView(tournament) {
       loser,
       impact: playoffImpact(bracket, winner, loser)
     };
+    const stake = playoffStakeForCard(tournament, card);
+    if (stake) {
+      card.stake = stake;
+      card.impact = stake.cardImpact || stake.body || card.impact;
+    }
+    return card;
   });
   return {
     type: "playoffs",
@@ -964,6 +970,35 @@ function playoffImpact(bracket, winner, loser) {
   return `${winner} 晋级，${loser} 进入下一条签表路径或结束赛程。`;
 }
 
+function playoffStakeForCard(tournament, card) {
+  const stakes = Array.isArray(tournament.rules?.stakes) ? tournament.rules.stakes : [];
+  const roundText = `${card.round || ""} ${card.bracket || ""}`.toLowerCase();
+  for (const stake of stakes) {
+    if (stake.status && stake.status !== card.status) continue;
+    const roundIncludes = Array.isArray(stake.roundIncludes) ? stake.roundIncludes : [];
+    if (roundIncludes.length && !roundIncludes.some((item) => roundText.includes(String(item).toLowerCase()))) continue;
+    if (!card.winner && (stake.headline || stake.body || stake.cardImpact || "").includes("{winner}")) continue;
+    return {
+      id: stake.id,
+      headline: applyStakeTemplate(stake.headline, card),
+      body: applyStakeTemplate(stake.body, card),
+      cardImpact: applyStakeTemplate(stake.cardImpact, card),
+      chips: Array.isArray(stake.chips) ? stake.chips : []
+    };
+  }
+  return null;
+}
+
+function applyStakeTemplate(template, card) {
+  if (!template) return "";
+  return String(template)
+    .replaceAll("{winner}", card.winner || "胜者")
+    .replaceAll("{loser}", card.loser || "败者")
+    .replaceAll("{left}", card.left || "")
+    .replaceAll("{right}", card.right || "")
+    .replaceAll("{score}", card.score || "");
+}
+
 function teamName(tournament, id) {
   return tournament.teams.find((team) => team.id === id)?.name || id;
 }
@@ -993,6 +1028,7 @@ function playoffFocusCandidates(tournament, phaseView) {
   const config = focusConfig(tournament);
   const upcoming = phaseView.cards.filter((card) => card.status !== "finished");
   const finished = phaseView.cards.filter((card) => card.winner);
+  const stakeCards = phaseView.cards.filter((card) => card.stake?.headline);
   const lowerNext = upcoming.find((card) => card.bracket === "败者组");
   const upperNext = upcoming.find((card) => card.bracket === "胜者组");
   const next = upcoming[0];
@@ -1002,6 +1038,16 @@ function playoffFocusCandidates(tournament, phaseView) {
   ].filter(Boolean));
   const allowUnderdog = !config.avoid?.includes("underdog_path_without_seed") || hasSeedSignal(phaseView);
   const upsetTeams = allowUnderdog && hasSeedSignal(phaseView) ? underdogSurvivors(tournament, phaseView, lowerTeams) : [];
+
+  for (const card of stakeCards) {
+    candidates.push({
+      score: 120,
+      tone: "hot",
+      headline: card.stake.headline,
+      body: card.stake.body || `${card.left} ${card.score} ${card.right}。${card.impact}`,
+      chips: card.stake.chips?.length ? card.stake.chips : ["关键结果", "晋级权益"]
+    });
+  }
 
   if (lowerNext) {
     candidates.push({
@@ -1419,6 +1465,64 @@ async function callLlm(provider, prompt, context) {
   return json.choices?.[0]?.message?.content || null;
 }
 
+async function enhanceAnalysisWithLlm(provider, tournament, analysis) {
+  const prompt = [
+    "请基于结构化数据输出 JSON，不要输出 Markdown。",
+    "JSON 格式：{\"summary\":\"两到四句中文摘要\",\"focusStories\":[{\"tone\":\"hot|watch\",\"headline\":\"一句焦点标题\",\"body\":\"两到三句，必须点明哪些比赛/赛果为什么重要\",\"chips\":[\"标签1\",\"标签2\"]}]}。",
+    "优先识别 rules.stakes、phaseView.cards[].stake、关键晋级权益、国际赛名额、胜败者组路径、还没打的直接影响比赛。",
+    "不得编造结构化数据中不存在的赛果；如果规则只来自项目配置，请用“按当前规则配置/以官方公告为准”保持边界。"
+  ].join("\n");
+  const llm = await callLlm(provider, prompt, compactContext(tournament, analysis));
+  if (!llm) return false;
+  const parsed = parseJsonFromLlm(llm);
+  if (!parsed) {
+    analysis.summary = llm;
+    return true;
+  }
+  if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+    analysis.summary = parsed.summary.trim();
+  }
+  if (Array.isArray(parsed.focusStories)) {
+    const focusStories = parsed.focusStories
+      .map(normalizeLlmFocusStory)
+      .filter(Boolean)
+      .slice(0, 2);
+    if (focusStories.length) analysis.focusStories = focusStories;
+  }
+  analysis.aiEnhanced = true;
+  return true;
+}
+
+function parseJsonFromLlm(text) {
+  const raw = String(text || "").trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : raw;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) return null;
+    try {
+      return JSON.parse(candidate.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeLlmFocusStory(story) {
+  if (!story || typeof story !== "object") return null;
+  const headline = String(story.headline || "").trim();
+  const body = String(story.body || "").trim();
+  if (!headline || !body) return null;
+  const tone = story.tone === "hot" ? "hot" : "watch";
+  const chips = Array.isArray(story.chips)
+    ? story.chips.map((chip) => String(chip).trim()).filter(Boolean).slice(0, 4)
+    : [];
+  return { tone, headline, body, chips };
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/api/tournaments") {
@@ -1434,8 +1538,7 @@ async function handleApi(req, res) {
     const provider = url.searchParams.get("provider") || "local";
     if (provider !== "local") {
       try {
-        const llm = await callLlm(provider, "请输出晋级形势摘要、关键比赛、每个梯队的风险判断。若不是官方积分榜，必须避免使用锁定晋级、理论淘汰等确定性措辞。", compactContext(tournament, analysis));
-        if (llm) analysis.summary = llm;
+        await enhanceAnalysisWithLlm(provider, tournament, analysis);
       } catch (error) {
         analysis.llmError = error.message;
       }

@@ -83,6 +83,17 @@
           "lower": "败者组淘汰线",
           "final": "后续签表"
         },
+        "stakes": [
+          {
+            "id": "lec-spring-upper-final-msi",
+            "roundIncludes": ["upper bracket final"],
+            "status": "finished",
+            "headline": "{winner} 击败 {loser}，锁定 MSI 门票。",
+            "body": "{winner} 赢下胜者组决赛后进入总决赛路径，并按当前项目规则配置锁定 MSI 资格；{loser} 掉入败者组，仍有机会从败者组打回决赛。",
+            "cardImpact": "{winner} 进入决赛路径并锁定 MSI 资格，{loser} 掉入败者组继续争夺另一个决赛位置。",
+            "chips": ["MSI门票", "胜者组决赛", "已锁定"]
+          }
+        ],
         "tiebreakers": ["败者组 BO5", "胜者晋级下一轮", "败者淘汰", "官方签表更新"]
       },
       "focus": {

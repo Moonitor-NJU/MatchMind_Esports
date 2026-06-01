@@ -83,14 +83,13 @@ async function loadTournaments(options = {}) {
     ? state.tournament.id
     : state.tournaments[0]?.id;
   await loadAnalysis(preferredId, options);
-  loadNews(options).catch(() => {
-    state.news = [];
-    renderNews();
-  });
 }
 
 async function loadNews(options = {}) {
-  const data = await requestJson(`/api/news${options.refresh ? "?refresh=1" : ""}`);
+  const params = new URLSearchParams();
+  if (options.refresh) params.set("refresh", "1");
+  if (options.tournamentId || state.tournament?.id) params.set("tournament", options.tournamentId || state.tournament.id);
+  const data = await requestJson(`/api/news${params.toString() ? `?${params.toString()}` : ""}`);
   state.news = data.items || [];
   state.newsIndex = 0;
   renderNews();
@@ -115,6 +114,10 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
   els.tournamentSelect.value = state.tournament.id;
   renderAll();
   if (switchingTournament) resetAgentForTournament();
+  loadNews({ refresh: options.refresh, tournamentId: state.tournament.id }).catch(() => {
+    state.news = [];
+    renderNews();
+  });
 }
 
 function renderAll() {
@@ -148,8 +151,9 @@ function resetAgentForTournament() {
 function renderNews() {
   const items = state.news.length ? state.news : fallbackNewsItems();
   const active = items[state.newsIndex % items.length];
+  const activeAttrs = newsLinkAttrs(active.url);
   els.newsStage.innerHTML = `
-    <a class="news-hero" href="${escapeHtml(active.url)}" target="_blank" rel="noopener noreferrer">
+    <a class="news-hero" href="${escapeHtml(active.url)}"${activeAttrs}>
       <img src="${escapeHtml(active.image)}" alt="${escapeHtml(active.title)}" loading="lazy">
       <div class="news-overlay">
         <p class="eyebrow">Trending</p>
@@ -166,7 +170,7 @@ function renderNews() {
     </a>
   `;
   els.newsRail.innerHTML = items.slice(0, 4).map((item, index) => `
-    <a class="news-tile ${index === state.newsIndex % items.length ? "active" : ""}" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" data-news-index="${index}">
+    <a class="news-tile ${index === state.newsIndex % items.length ? "active" : ""}" href="${escapeHtml(item.url)}"${newsLinkAttrs(item.url)} data-news-index="${index}">
       <img src="${escapeHtml(item.image)}" alt="">
       <div>
         <strong>${escapeHtml(item.title)}</strong>
@@ -175,6 +179,10 @@ function renderNews() {
     </a>
   `).join("");
   restartNewsTimer(items.length);
+}
+
+function newsLinkAttrs(url) {
+  return String(url || "").startsWith("#") ? "" : ` target="_blank" rel="noopener noreferrer"`;
 }
 
 function restartNewsTimer(total) {
@@ -349,7 +357,7 @@ function renderAnalysis() {
   if (state.meta?.warning) {
     lines.push(state.meta.warning);
   }
-  els.analysisText.innerHTML = lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+  els.analysisText.innerHTML = renderMarkdown(lines.join("\n\n"));
   els.keyMatches.innerHTML = state.analysis.keyMatches.slice(0, 5).map((match) => `
     <div class="key-item">
       <strong>${match.left} vs ${match.right} · ${match.tag}</strong>
@@ -458,6 +466,48 @@ function matchLabel(match) {
   return `${left} vs ${right}`;
 }
 
+function renderMarkdown(value) {
+  const text = String(value || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+  const blocks = [];
+  const lines = text.split("\n");
+  let list = [];
+  const flushList = () => {
+    if (!list.length) return;
+    blocks.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+    list = [];
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushList();
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      const level = Math.min(4, heading[1].length + 2);
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/) || line.match(/^\d+[.)]\s+(.+)$/);
+    if (bullet) {
+      list.push(bullet[1]);
+      continue;
+    }
+    flushList();
+    blocks.push(`<p>${renderInlineMarkdown(line)}</p>`);
+  }
+  flushList();
+  return blocks.join("");
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -470,9 +520,17 @@ function escapeHtml(value) {
 function addMessage(role, text) {
   const message = document.createElement("div");
   message.className = `message ${role}`;
-  message.textContent = text;
+  setRichText(message, text, role === "assistant");
   els.chatLog.appendChild(message);
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+function setRichText(element, text, markdown = true) {
+  if (markdown) {
+    element.innerHTML = renderMarkdown(text);
+  } else {
+    element.textContent = text;
+  }
 }
 
 async function ask(question) {
@@ -499,7 +557,7 @@ async function ask(question) {
       waiting.remove();
       return;
     }
-    waiting.textContent = data.answer;
+    setRichText(waiting, data.answer, true);
   } catch (error) {
     if (state.tournament.id !== requestTournamentId) {
       waiting.remove();
@@ -566,26 +624,26 @@ els.scoreButtons.addEventListener("click", async (event) => {
   if (!matchId) return;
   const requestTournamentId = state.tournament.id;
   if (button.dataset.action === "predict") {
-      els.scenarioResult.textContent = state.provider === "local"
-        ? "正在生成本地赛前预测..."
-        : "正在调用模型生成赛前预测...";
-      try {
-        const data = await requestJson("/api/prediction", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            tournamentId: state.tournament.id,
-            matchId,
-            provider: state.provider
-          })
-        });
-        if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
-        els.scenarioResult.textContent = data.prediction;
-      } catch (error) {
-        if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
-        els.scenarioResult.textContent = `预测失败：${error.message}`;
-      }
-      return;
+    els.scenarioResult.textContent = state.provider === "local"
+      ? "正在生成本地赛前预测..."
+      : "正在调用模型生成赛前预测...";
+    try {
+      const data = await requestJson("/api/prediction", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tournamentId: state.tournament.id,
+          matchId,
+          provider: state.provider
+        })
+      });
+      if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
+      els.scenarioResult.innerHTML = renderMarkdown(data.prediction);
+    } catch (error) {
+      if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
+      els.scenarioResult.textContent = `预测失败：${error.message}`;
+    }
+    return;
   }
   els.scenarioResult.textContent = "正在重算假设结果...";
   const scenario = {
@@ -601,7 +659,7 @@ els.scoreButtons.addEventListener("click", async (event) => {
       body: JSON.stringify({ tournamentId: state.tournament.id, scenario })
     });
     if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
-    els.scenarioResult.textContent = data.scenarioText || firstLine(data.analysis.summary);
+    els.scenarioResult.innerHTML = renderMarkdown(data.scenarioText || firstLine(data.analysis.summary));
   } catch (error) {
     if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
     els.scenarioResult.textContent = `推演失败：${error.message}`;

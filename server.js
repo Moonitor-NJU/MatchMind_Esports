@@ -13,7 +13,7 @@ loadEnvFile();
 
 const LIVE_CACHE_TTL_MS = Number(process.env.LIVE_CACHE_TTL_MS || 5 * 60 * 1000);
 const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60 * 1000);
-let newsCache = null;
+const newsCache = new Map();
 
 const TEAM_AUDIENCE_BASELINES = {
   T1: { heat: 100, aliases: ["t1", "faker"] },
@@ -2072,10 +2072,7 @@ function buildPredictionContext(tournament, analysis, match, newsItems = []) {
     : null;
   const playoffPaths = isPlayoffs ? buildPlayoffTeamPaths(analysis.phaseView) : [];
   const pathByTeam = new Map(playoffPaths.map((path) => [path.team, path]));
-  const relatedNews = (newsItems || []).filter((item) => {
-    const text = `${item.title || ""} ${item.description || ""}`.toLowerCase();
-    return [left?.name, right?.name, tournament.name].some((name) => name && text.includes(name.toLowerCase()));
-  }).slice(0, 8);
+  const relatedNews = relatedNewsForMatch(newsItems, tournament, [left?.name, right?.name]).slice(0, 8);
   return JSON.stringify({
     tournament: {
       name: tournament.name,
@@ -2122,6 +2119,17 @@ function buildPredictionContext(tournament, analysis, match, newsItems = []) {
       relatedNews
     }
   });
+}
+
+function relatedNewsForMatch(newsItems, tournament, teams) {
+  const general = relatedNewsForTournament(newsItems, tournament);
+  return general
+    .map((item) => {
+      const text = `${item.title || ""} ${item.description || ""}`.toLowerCase();
+      const matchHit = teams.some((name) => name && teamMentionedInText(name, text));
+      return { ...item, matchHit };
+    })
+    .sort((a, b) => Number(b.matchHit) - Number(a.matchHit));
 }
 
 function buildPredictionPrompt() {
@@ -2263,46 +2271,66 @@ function normalizeLlmFocusStory(story) {
   return { tone, headline, body, chips };
 }
 
-async function getNewsData({ refresh = false } = {}) {
+async function getNewsData({ refresh = false, tournament = null } = {}) {
   const now = Date.now();
-  if (!refresh && newsCache && now - newsCache.cachedAt < NEWS_CACHE_TTL_MS) return newsCache.data;
+  const cacheKey = tournament?.id || "global";
+  const cached = newsCache.get(cacheKey);
+  if (!refresh && cached && now - cached.cachedAt < NEWS_CACHE_TTL_MS) return cached.data;
   try {
-    const items = await fetchNewsItems();
+    const items = await fetchNewsItems(tournament);
+    const generatedOnly = items.length && items.every((item) => String(item.source || "").startsWith("MatchMind"));
     const data = {
-      items: items.length ? items : fallbackNews(),
+      items: items.length ? items : fallbackNews(tournament),
       meta: {
-        source: items.length ? "RSS/网页新闻源" : "本地赛事焦点",
+        source: items.length
+          ? (generatedOnly ? "本地赛区焦点" : (tournament ? "中文网页/RSS/新闻搜索" : "RSS/网页新闻源"))
+          : "本地赛事焦点",
         updatedAt: new Date().toISOString()
       }
     };
-    newsCache = { cachedAt: now, data };
+    newsCache.set(cacheKey, { cachedAt: now, data });
     return data;
   } catch (error) {
     const data = {
-      items: fallbackNews(),
+      items: fallbackNews(tournament),
       meta: {
         source: "本地赛事焦点",
         warning: `新闻源暂不可用：${error.message}`,
         updatedAt: new Date().toISOString()
       }
     };
-    newsCache = { cachedAt: now, data };
+    newsCache.set(cacheKey, { cachedAt: now, data });
     return data;
   }
 }
 
-async function fetchNewsItems() {
-  const sources = newsSources();
+async function fetchNewsItems(tournament = null) {
+  const sources = [...newsSources(), ...tournamentNewsSources(tournament)];
   const batches = await Promise.allSettled(sources.map((source) => fetchNewsSource(source)));
   const items = batches.flatMap((batch) => batch.status === "fulfilled" ? batch.value : []);
   const deduped = [];
   const seen = new Set();
-  for (const item of items.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
+  const tournamentNames = tournament ? new Set((tournament.teams || []).map((team) => team.name)) : null;
+  const scored = items
+    .map((item) => ({ ...item, relevance: newsRelevance(item, tournament, tournamentNames) }))
+    .filter((item) => isUsableNewsItem(item, tournament));
+  const pool = tournament ? scored.filter((item) => item.relevance > 0) : scored;
+  for (const item of pool
+    .sort((a, b) => b.relevance - a.relevance || new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
     const key = normalizeUrl(item.url);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);
     if (deduped.length >= 8) break;
+  }
+  if (tournament && deduped.length < 4) {
+    for (const item of fallbackNews(tournament)) {
+      const key = normalizeUrl(item.url) || `${item.source}:${item.title}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(item);
+      if (deduped.length >= 8) break;
+    }
   }
   return deduped;
 }
@@ -2310,6 +2338,8 @@ async function fetchNewsItems() {
 function newsSources() {
   const configured = csv(process.env.NEWS_FEEDS);
   const urls = configured.length ? configured : [
+    "https://lolesports.com/zh-CN/news",
+    "https://lpl.qq.com/es/news.shtml",
     "https://lolesports.com/en-US/news",
     "https://www.dexerto.com/league-of-legends/feed/",
     "https://esports.gg/news/league-of-legends/feed/"
@@ -2317,10 +2347,48 @@ function newsSources() {
   return urls.map((url) => ({ url, source: sourceNameFromUrl(url) }));
 }
 
+function tournamentNewsSources(tournament) {
+  if (!tournament) return [];
+  return tournamentNewsQueries(tournament).flatMap((query) => [
+    {
+      url: `https://cn.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss&setlang=zh-cn&cc=CN`,
+      source: `Bing新闻：${query}`
+    },
+    {
+      url: `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=zh-cn&cc=CN`,
+      source: `Bing搜索：${query}`
+    }
+  ]);
+}
+
+function tournamentNewsQueries(tournament) {
+  const league = String(tournament.name || "").split(/[ ·:：\s]+/)[0] || "英雄联盟赛事";
+  const stage = tournament.rules?.phase === "playoffs" ? "季后赛" : "常规赛";
+  const queries = new Set([
+    `${league} ${stage} 英雄联盟 最新`,
+    `${league} ${stage} 晋级形势`,
+    `${league} ${stage} site:scoregg.com`,
+    `${league} ${stage} site:lol.qq.com`
+  ]);
+  const openMatches = (tournament.matches || [])
+    .filter((match) => match.status !== "finished")
+    .slice(0, 3);
+  for (const match of openMatches) {
+    const left = teamName(tournament, match.teams[0]);
+    const right = teamName(tournament, match.teams[1]);
+    queries.add(`${league} ${left} ${right} 预测 英雄联盟`);
+    queries.add(`${left} ${right} ${stage} 英雄联盟`);
+  }
+  return Array.from(queries).slice(0, 5);
+}
+
 async function fetchNewsSource(source) {
   const text = await fetchText(source.url);
   const rssItems = parseRssItems(text, source);
-  const items = rssItems.length ? rssItems : parseLoLEsportsNews(text, source);
+  const items = rssItems.length ? rssItems : [
+    ...parseLoLEsportsNews(text, source),
+    ...parseGenericNewsLinks(text, source)
+  ];
   const enriched = [];
   for (const item of items.slice(0, 5)) {
     const image = item.image || await fetchArticleImage(item.url).catch(() => null);
@@ -2359,6 +2427,104 @@ function parseLoLEsportsNews(html, source) {
   return items;
 }
 
+function parseGenericNewsLinks(html, source) {
+  const items = [];
+  const seen = new Set();
+  const baseUrl = source.url;
+  const linkPattern = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{6,220}?)<\/a>/gi;
+  for (const match of String(html || "").matchAll(linkPattern)) {
+    const rawHref = decodeXml(match[1]);
+    const title = normalizeNewsTitle(decodeXml(stripTags(match[2])));
+    if (!title || !looksLikeEsportsNewsTitle(title)) continue;
+    const url = resolveUrl(rawHref, baseUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    items.push({
+      title,
+      url,
+      image: "",
+      source: source.source,
+      publishedAt: new Date().toISOString()
+    });
+    if (items.length >= 8) break;
+  }
+  return items;
+}
+
+function normalizeNewsTitle(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^(更多|查看详情|阅读全文)[:：\s-]*/i, "")
+    .trim();
+}
+
+function looksLikeEsportsNewsTitle(title) {
+  const text = String(title || "").toLowerCase();
+  if (/[�]{1,}|\?{3,}/.test(text)) return false;
+  if (text.length < 8 || text.length > 90) return false;
+  const keywords = [
+    "lpl", "lck", "lec", "lcs", "lcp", "msi", "英雄联盟", "季后赛", "常规赛",
+    "赛程", "胜者组", "败者组", "晋级", "淘汰", "blg", "tes", "al", "we", "t1", "geng", "gen"
+  ];
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function resolveUrl(href, baseUrl) {
+  try {
+    const url = new URL(href, baseUrl);
+    if (!/^https?:$/.test(url.protocol)) return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function newsRelevance(item, tournament, teamNames = null) {
+  if (!tournament) return 0;
+  const text = `${item.title || ""} ${item.description || ""}`.toLowerCase();
+  let score = 0;
+  const league = String(tournament.name || "").split(/[ ·:：\s]+/)[0].toLowerCase();
+  const leagueMatched = league && text.includes(league);
+  let teamScore = 0;
+  if (leagueMatched) score += 20;
+  for (const name of teamNames || []) {
+    if (teamMentionedInText(name, text)) teamScore += 14;
+  }
+  score += teamScore;
+  if (!leagueMatched && teamScore === 0) return 0;
+  if (tournament.rules?.phase === "playoffs" && /季后赛|playoff|胜者组|败者组|淘汰|晋级/.test(text)) score += 12;
+  if (/预测|前瞻|焦点|爆冷|门票|msi/i.test(text)) score += 8;
+  return score;
+}
+
+function isUsableNewsItem(item, tournament = null) {
+  const title = normalizeNewsTitle(item.title);
+  if (!title || /[�]{1,}|\?{3,}/.test(title)) return false;
+  const url = normalizeUrl(item.url);
+  if (!url) return false;
+  if (/powerpoint|microsoft365|office\.com|bing\.com\/search/i.test(`${title} ${url}`)) return false;
+  if (/live\.bilibili\.com|huya\.com\/search|douyu\.com\/search|bendibao\.com/i.test(url)) return false;
+  if (/op\.gg|\/leagues\//i.test(url) || /schedule|standings|赛程、排名|排名和结果/i.test(title)) return false;
+  if (/全明星周末/i.test(title) || /\/act\//i.test(url)) return false;
+  const currentYear = new Date().getFullYear();
+  const yearMatch = title.match(/\b(20\d{2})\b/);
+  if (yearMatch && Number(yearMatch[1]) < currentYear) return false;
+  if (tournament && String(item.source || "").includes("Bing搜索") && !searchResultLooksCurrent(item, tournament)) return false;
+  return true;
+}
+
+function searchResultLooksCurrent(item, tournament) {
+  const currentYear = String(new Date().getFullYear());
+  const text = `${item.title || ""} ${item.description || ""} ${item.url || ""}`.toLowerCase();
+  if (text.includes(currentYear)) return true;
+  const openMatches = (tournament.matches || []).filter((match) => match.status !== "finished");
+  return openMatches.some((match) => {
+    const left = teamName(tournament, match.teams[0]);
+    const right = teamName(tournament, match.teams[1]);
+    return teamMentionedInText(left, text) && teamMentionedInText(right, text);
+  });
+}
+
 async function fetchText(url) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 9000);
@@ -2371,10 +2537,36 @@ async function fetchText(url) {
       signal: controller.signal
     });
     if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-    return await response.text();
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") || "";
+    return decodeResponseText(bytes, contentType);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function decodeResponseText(bytes, contentType = "") {
+  const headerCharset = charsetFromText(contentType);
+  const asciiPreview = new TextDecoder("latin1").decode(bytes.slice(0, Math.min(bytes.length, 4096)));
+  const metaCharset = charsetFromText(asciiPreview);
+  const charset = normalizeCharset(headerCharset || metaCharset || "utf-8");
+  try {
+    return new TextDecoder(charset).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
+
+function charsetFromText(value) {
+  const match = String(value || "").match(/charset=["']?\s*([a-z0-9_-]+)/i);
+  return match ? match[1] : "";
+}
+
+function normalizeCharset(value) {
+  const lower = String(value || "").trim().toLowerCase();
+  if (["gbk", "gb2312", "gb18030"].includes(lower)) return "gb18030";
+  if (["utf8", "utf-8"].includes(lower)) return "utf-8";
+  return lower || "utf-8";
 }
 
 function parseRssItems(xml, source) {
@@ -2397,6 +2589,7 @@ function parseRssItem(itemXml, source) {
   return {
     title,
     url,
+    description: stripTags(description).trim(),
     image,
     source: source.source,
     publishedAt: parseNewsDate(xmlValue(itemXml, "pubDate") || xmlValue(itemXml, "dc:date"))
@@ -2460,10 +2653,11 @@ function parseNewsDate(value) {
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol)) return "";
     parsed.hash = "";
     return parsed.toString();
   } catch {
-    return String(url || "");
+    return "";
   }
 }
 
@@ -2475,7 +2669,19 @@ function sourceNameFromUrl(url) {
   }
 }
 
-function fallbackNews() {
+function fallbackNews(tournament = null) {
+  if (tournament) {
+    const analysis = localAnalysis(tournament);
+    const items = (analysis.keyMatches || []).slice(0, 4).map((match) => ({
+      title: `${match.left} vs ${match.right}：${match.tag}`,
+      description: match.reason,
+      source: "MatchMind 赛区焦点",
+      url: "#analysis",
+      image: "/news-placeholder.svg",
+      publishedAt: match.startsAt || new Date().toISOString()
+    }));
+    if (items.length) return items;
+  }
   return [
     {
       title: "实时赛事焦点正在更新",
@@ -2496,7 +2702,13 @@ async function handleApi(req, res) {
   }
 
   if (url.pathname === "/api/news") {
-    const data = await getNewsData({ refresh: url.searchParams.get("refresh") === "1" });
+    const tournamentId = url.searchParams.get("tournament");
+    let tournament = null;
+    if (tournamentId) {
+      const tournamentData = await getTournamentData();
+      tournament = getTournamentFromData(tournamentData, tournamentId);
+    }
+    const data = await getNewsData({ refresh: url.searchParams.get("refresh") === "1", tournament });
     sendJson(res, 200, data);
     return;
   }
@@ -2505,7 +2717,7 @@ async function handleApi(req, res) {
     const data = await getTournamentData({ refresh: url.searchParams.get("refresh") === "1" });
     const tournament = getTournamentFromData(data, url.searchParams.get("tournament"));
     const analysis = localAnalysis(tournament);
-    const news = await getNewsData().catch(() => ({ items: [] }));
+    const news = await getNewsData({ tournament }).catch(() => ({ items: [] }));
     enrichAnalysisWithAudienceFocus(tournament, analysis, news.items);
     const provider = url.searchParams.get("provider") || "local";
     if (provider !== "local") {
@@ -2524,7 +2736,7 @@ async function handleApi(req, res) {
     const data = await getTournamentData();
     const tournament = getTournamentFromData(data, body.tournamentId);
     const analysis = localAnalysis(tournament, body.scenario || {});
-    const news = await getNewsData().catch(() => ({ items: [] }));
+    const news = await getNewsData({ tournament }).catch(() => ({ items: [] }));
     enrichAnalysisWithAudienceFocus(tournament, analysis, news.items);
     const provider = body.provider || "local";
     let answer = answerLocally(body.question || "", tournament, analysis);
@@ -2545,7 +2757,7 @@ async function handleApi(req, res) {
     const data = await getTournamentData();
     const tournament = getTournamentFromData(data, body.tournamentId);
     const analysis = localAnalysis(tournament);
-    const news = await getNewsData().catch(() => ({ items: [] }));
+    const news = await getNewsData({ tournament }).catch(() => ({ items: [] }));
     enrichAnalysisWithAudienceFocus(tournament, analysis, news.items);
     const match = tournament.matches.find((item) => item.id === body.matchId);
     if (!match) {
@@ -2574,7 +2786,7 @@ async function handleApi(req, res) {
     const data = await getTournamentData();
     const tournament = getTournamentFromData(data, body.tournamentId);
     const analysis = localAnalysis(tournament, body.scenario || {});
-    const news = await getNewsData().catch(() => ({ items: [] }));
+    const news = await getNewsData({ tournament }).catch(() => ({ items: [] }));
     enrichAnalysisWithAudienceFocus(tournament, analysis, news.items);
     const scenarioText = buildScenarioText(tournament, body.scenario || {}, analysis);
     sendJson(res, 200, { tournament, analysis, scenarioText, meta: data.meta, updatedAt: new Date().toISOString() });

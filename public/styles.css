@@ -863,19 +863,71 @@ td {
   padding: 12px 13px;
   border-radius: 8px;
   line-height: 1.6;
-  white-space: pre-wrap;
 }
 
 .message.user {
   justify-self: end;
   background: var(--ink);
   color: #ffffff;
+  white-space: pre-wrap;
 }
 
 .message.assistant {
   justify-self: start;
   background: #ffffff;
   border: 1px solid var(--line);
+}
+
+.message.assistant p,
+.scenario-result p,
+.analysis-text p {
+  margin: 0 0 10px;
+}
+
+.message.assistant p:last-child,
+.scenario-result p:last-child,
+.analysis-text p:last-child {
+  margin-bottom: 0;
+}
+
+.message.assistant h3,
+.message.assistant h4,
+.scenario-result h3,
+.scenario-result h4,
+.analysis-text h3,
+.analysis-text h4 {
+  margin: 4px 0 8px;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.message.assistant ul,
+.scenario-result ul,
+.analysis-text ul {
+  margin: 6px 0 10px;
+  padding-left: 20px;
+}
+
+.message.assistant li,
+.scenario-result li,
+.analysis-text li {
+  margin: 4px 0;
+}
+
+.message.assistant strong,
+.scenario-result strong,
+.analysis-text strong {
+  color: var(--ink);
+}
+
+.message.assistant code,
+.scenario-result code,
+.analysis-text code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: #eef2f7;
+  color: var(--ink);
 }
 
 .chat-form {
@@ -956,7 +1008,6 @@ td {
   background: #f8fafc;
   color: #344054;
   line-height: 1.7;
-  white-space: pre-wrap;
 }
 
 @media (max-width: 960px) {

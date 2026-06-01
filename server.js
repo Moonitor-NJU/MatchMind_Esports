@@ -15,37 +15,37 @@ const LIVE_CACHE_TTL_MS = Number(process.env.LIVE_CACHE_TTL_MS || 5 * 60 * 1000)
 const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60 * 1000);
 let newsCache = null;
 
-const TEAM_AUDIENCE_PROFILES = {
-  T1: { heat: 100, aliases: ["t1", "faker"], tags: ["全球流量队", "Faker", "冠军叙事"] },
-  GEN: { heat: 92, aliases: ["gen", "geng", "gen.g", "generation gaming"], tags: ["争冠热门", "强队标尺"] },
-  HLE: { heat: 78, aliases: ["hle", "hanwha"], tags: ["韩华", "争冠集团"] },
-  DK: { heat: 76, aliases: ["dk", "dplus", "damwon"], tags: ["老牌冠军", "中上野看点"] },
-  KT: { heat: 72, aliases: ["kt", "kt rolster"], tags: ["通信社大战", "老牌强队"] },
-  BRO: { heat: 48, aliases: ["bro", "brion"], tags: ["卡位压力", "保席位叙事"] },
-  BLG: { heat: 96, aliases: ["blg", "bilibili gaming", "bin", "knight"], tags: ["LPL流量队", "冠军热门", "上中核心"] },
-  TES: { heat: 92, aliases: ["tes", "top esports", "jackeylove", "369"], tags: ["LPL流量队", "高波动", "话题体质"] },
-  JDG: { heat: 86, aliases: ["jdg", "jd gaming", "ruler"], tags: ["强队底色", "冠军班底"] },
-  EDG: { heat: 88, aliases: ["edg", "edward gaming"], tags: ["老牌豪门", "粉丝基本盘"] },
-  IG: { heat: 82, aliases: ["ig", "invictus gaming"], tags: ["老牌冠军", "情怀队"] },
-  WBG: { heat: 84, aliases: ["wbg", "weibo gaming", "the shy", "theshy"], tags: ["高话题度", "流量队"] },
-  AL: { heat: 64, aliases: ["al", "anyone's legend", "anyone legend"], tags: ["黑马线索", "上升势头"] },
-  TT: { heat: 58, aliases: ["tt", "thundertalk"], tags: ["爆冷线索", "败者组压力"] },
-  LGD: { heat: 56, aliases: ["lgd"], tags: ["老牌队名", "下克上叙事"] },
-  WE: { heat: 70, aliases: ["we", "team we"], tags: ["远古豪门", "情怀队"] },
-  NIP: { heat: 60, aliases: ["nip", "ninjas in pyjamas"], tags: ["国际俱乐部", "中游卡位"] },
-  G2: { heat: 94, aliases: ["g2", "g2 esports", "caps"], tags: ["欧洲流量队", "整活名门", "国际赛看点"] },
-  FNC: { heat: 88, aliases: ["fnc", "fnatic"], tags: ["欧洲豪门", "老牌粉丝盘"] },
-  KC: { heat: 86, aliases: ["kc", "karmine corp"], tags: ["欧洲高热度", "粉丝声量"] },
-  MKOI: { heat: 72, aliases: ["mkoi", "koi", "movistar koi"], tags: ["西欧话题队", "季后赛路径"] },
-  VIT: { heat: 76, aliases: ["vit", "vitality", "team vitality"], tags: ["高投入阵容", "败者组压力"] },
-  GX: { heat: 52, aliases: ["gx", "giantx"], tags: ["爆冷机会", "生死战"] },
-  C9: { heat: 86, aliases: ["c9", "cloud9"], tags: ["北美豪门", "国际赛熟脸"] },
-  TL: { heat: 84, aliases: ["tl", "team liquid"], tags: ["北美豪门", "明星阵容"] },
-  FLY: { heat: 74, aliases: ["fly", "flyquest"], tags: ["北美争冠", "近年上升"] },
-  "100T": { heat: 70, aliases: ["100t", "100 thieves"], tags: ["北美流量", "品牌队"] },
-  PSG: { heat: 78, aliases: ["psg", "psg talon"], tags: ["PCS/LCP强队", "国际赛常客"] },
-  CFO: { heat: 62, aliases: ["cfo", "ctbc flying oyster"], tags: ["LCP强队", "赛区代表"] },
-  GAM: { heat: 70, aliases: ["gam", "gam esports"], tags: ["越南代表", "爆冷传统"] }
+const TEAM_AUDIENCE_BASELINES = {
+  T1: { heat: 100, aliases: ["t1", "faker"] },
+  GEN: { heat: 92, aliases: ["gen", "geng", "gen.g", "generation gaming"] },
+  HLE: { heat: 78, aliases: ["hle", "hanwha"] },
+  DK: { heat: 76, aliases: ["dk", "dplus", "damwon"] },
+  KT: { heat: 72, aliases: ["kt", "kt rolster"] },
+  BRO: { heat: 48, aliases: ["bro", "brion"] },
+  BLG: { heat: 96, aliases: ["blg", "bilibili gaming", "bin", "knight"] },
+  TES: { heat: 92, aliases: ["tes", "top esports", "jackeylove", "369"] },
+  JDG: { heat: 86, aliases: ["jdg", "jd gaming", "ruler"] },
+  EDG: { heat: 88, aliases: ["edg", "edward gaming"] },
+  IG: { heat: 82, aliases: ["ig", "invictus gaming"] },
+  WBG: { heat: 84, aliases: ["wbg", "weibo gaming", "the shy", "theshy"] },
+  AL: { heat: 64, aliases: ["al", "anyone's legend", "anyone legend"] },
+  TT: { heat: 58, aliases: ["tt", "thundertalk"] },
+  LGD: { heat: 56, aliases: ["lgd"] },
+  WE: { heat: 70, aliases: ["we", "team we"] },
+  NIP: { heat: 60, aliases: ["nip", "ninjas in pyjamas"] },
+  G2: { heat: 94, aliases: ["g2", "g2 esports", "caps"] },
+  FNC: { heat: 88, aliases: ["fnc", "fnatic"] },
+  KC: { heat: 86, aliases: ["kc", "karmine corp"] },
+  MKOI: { heat: 72, aliases: ["mkoi", "koi", "movistar koi"] },
+  VIT: { heat: 76, aliases: ["vit", "vitality", "team vitality"] },
+  GX: { heat: 52, aliases: ["gx", "giantx"] },
+  C9: { heat: 86, aliases: ["c9", "cloud9"] },
+  TL: { heat: 84, aliases: ["tl", "team liquid"] },
+  FLY: { heat: 74, aliases: ["fly", "flyquest"] },
+  "100T": { heat: 70, aliases: ["100t", "100 thieves"] },
+  PSG: { heat: 78, aliases: ["psg", "psg talon"] },
+  CFO: { heat: 62, aliases: ["cfo", "ctbc flying oyster"] },
+  GAM: { heat: 70, aliases: ["gam", "gam esports"] }
 };
 
 const mimeTypes = {
@@ -627,6 +627,19 @@ function fallbackCompetitionRules(descriptor, teamCount) {
       tiebreakers: ["败者组 BO5", "胜者晋级下一轮", "败者淘汰", "官方签表更新"]
     };
   }
+  if (text.includes("road to msi")) {
+    return {
+      format: `${descriptor.league} Road to MSI 资格赛路径`,
+      phase: "playoffs",
+      advanceSlots: 0,
+      eliminationSlots: 0,
+      labels: {
+        final: "MSI 资格路径",
+        watch: "待战队伍"
+      },
+      tiebreakers: ["资格赛签表", "BO5 胜负关系", "官方晋级规则"]
+    };
+  }
   return {
     format: "按官方赛事组展示，排名优先使用官方积分榜",
     phase: text.includes("playoff") || text.includes("qualifier") ? "playoffs" : "regular",
@@ -1056,7 +1069,7 @@ function enrichAnalysisWithAudienceFocus(tournament, analysis, newsItems = []) {
   const existing = Array.isArray(analysis.focusStories) ? analysis.focusStories : [];
   const merged = [...audience, ...existing]
     .filter(uniqueFocusStory)
-    .slice(0, 3)
+    .slice(0, 2)
     .map(({ score, ...story }) => story);
   analysis.focusStories = merged;
   analysis.audienceSignals = audience.map(({ score, ...story }) => story);
@@ -1100,10 +1113,10 @@ function buildAudienceFocusCandidates(tournament, analysis, newsItems) {
     });
 
   for (const match of matches) {
-    const leftProfile = audienceProfile(match.left);
-    const rightProfile = audienceProfile(match.right);
     const leftBuzz = buzz.get(match.left) || { count: 0, headlines: [] };
     const rightBuzz = buzz.get(match.right) || { count: 0, headlines: [] };
+    const leftProfile = dynamicAudienceProfile(match.left, match, analysis, leftBuzz);
+    const rightProfile = dynamicAudienceProfile(match.right, match, analysis, rightBuzz);
     const heatScore = leftProfile.heat + rightProfile.heat;
     const buzzScore = (leftBuzz.count + rightBuzz.count) * 18;
     const stakesScore = match.bracket === "败者组" ? 30 : match.bracket === "胜者组" ? 16 : 8;
@@ -1152,14 +1165,64 @@ function teamMentionedInText(team, text) {
 }
 
 function audienceProfile(team) {
-  const direct = TEAM_AUDIENCE_PROFILES[team];
-  if (direct) return direct;
+  const direct = TEAM_AUDIENCE_BASELINES[team];
+  if (direct) return { ...direct, tags: [] };
   const upper = String(team || "").toUpperCase();
-  return TEAM_AUDIENCE_PROFILES[upper] || {
+  const upperProfile = TEAM_AUDIENCE_BASELINES[upper];
+  if (upperProfile) return { ...upperProfile, tags: [] };
+  return {
     heat: 42,
     aliases: [String(team || "").toLowerCase()],
-    tags: ["赛区变量"]
+    tags: []
   };
+}
+
+function dynamicAudienceProfile(team, match, analysis, buzz = { count: 0 }) {
+  const base = audienceProfile(team);
+  const tags = new Set();
+  const heatBoosts = [];
+  if (base.heat >= 92) tags.add("顶级关注队");
+  else if (base.heat >= 82) tags.add("高关注队");
+  else if (base.heat >= 68) tags.add("稳定粉丝盘");
+  if (buzz.count >= 3) {
+    tags.add("近期标题热队");
+    heatBoosts.push(12);
+  } else if (buzz.count > 0) {
+    tags.add("新闻有声量");
+    heatBoosts.push(6);
+  }
+  if (match.bracket === "败者组") tags.add("生死线压力");
+  if (match.bracket === "胜者组") tags.add("主动权战");
+  const trajectory = currentTrajectoryTag(team, analysis.phaseView);
+  if (trajectory) {
+    tags.add(trajectory.tag);
+    heatBoosts.push(trajectory.heat);
+  }
+  if (!tags.size) tags.add("赛区变量");
+  return {
+    ...base,
+    heat: base.heat + heatBoosts.reduce((sum, item) => sum + item, 0),
+    tags: Array.from(tags)
+  };
+}
+
+function currentTrajectoryTag(team, phaseView) {
+  if (phaseView?.type !== "playoffs") return null;
+  const finished = (phaseView.cards || [])
+    .filter((card) => card.status === "finished" && (card.winner === team || card.loser === team))
+    .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)));
+  const latest = finished[0];
+  if (!latest) return null;
+  if (latest.winner === team) {
+    const winnerBase = audienceProfile(latest.winner).heat;
+    const loserBase = audienceProfile(latest.loser).heat;
+    if (loserBase - winnerBase >= 25) return { tag: "刚爆冷高热队", heat: 20 };
+    if (latest.bracket === "败者组") return { tag: "败者组续命", heat: 10 };
+    return { tag: "胜者组推进", heat: 8 };
+  }
+  if (latest.loser === team && latest.bracket === "胜者组") return { tag: "刚掉入败者组", heat: 8 };
+  if (latest.loser === team) return { tag: "淘汰边缘", heat: 6 };
+  return null;
 }
 
 function recencyWeight(value) {
@@ -1191,11 +1254,16 @@ function sharedAudienceTags(left, right) {
 function audienceHeadline(match, leftProfile, rightProfile, leftBuzz, rightBuzz, rivalry) {
   const hotter = leftProfile.heat >= rightProfile.heat ? match.left : match.right;
   const lower = leftProfile.heat >= rightProfile.heat ? match.right : match.left;
+  const leftUpset = hasAudienceTag(leftProfile, "刚爆冷");
+  const rightUpset = hasAudienceTag(rightProfile, "刚爆冷");
   if (leftBuzz.count + rightBuzz.count >= 3) return `${match.left} vs ${match.right} 是当前讨论度最高的观赛入口。`;
+  if (leftUpset && rightUpset) return `${match.left} vs ${match.right} 是两条爆冷线索的正面碰撞。`;
+  if (leftUpset || rightUpset) return `${leftUpset ? match.left : match.right} 刚掀翻高热队，下一场成色最值得验。`;
   if (match.bracket === "败者组") {
     if (rivalry === "下克上") return `${lower} 想把 ${hotter} 拖进真正的爆冷局。`;
     return `${hotter} 的流量和 ${lower} 的生死线撞在一起。`;
   }
+  if (match.bracket === "淘汰赛") return `${match.left} vs ${match.right} 是资格路径里最有声量的一组对话。`;
   if (match.bracket === "胜者组") {
     if (rivalry === "情怀盘") return `${match.left} vs ${match.right} 是黑马势头和老牌情怀的正面对话。`;
     return `${match.left} vs ${match.right} 不只是晋级战，也是话题队的主动权之争。`;
@@ -1205,13 +1273,31 @@ function audienceHeadline(match, leftProfile, rightProfile, leftBuzz, rightBuzz,
 
 function audienceBody(match, leftProfile, rightProfile, leftBuzz, rightBuzz, rivalry) {
   const buzzLine = buzzSummary(match.left, leftBuzz, match.right, rightBuzz);
-  const identity = `${match.left} 带着「${leftProfile.tags.slice(0, 2).join("、")}」标签，${match.right} 的看点是「${rightProfile.tags.slice(0, 2).join("、")}」。`;
+  const identity = `${match.left} 带着「${displayAudienceTags(leftProfile).join("、")}」标签，${match.right} 的看点是「${displayAudienceTags(rightProfile).join("、")}」。`;
   const stakes = match.bracket === "败者组"
     ? "赛制上这是没有容错的 BO5，输的一方会直接结束本阶段或被淘汰，因此情绪价值比普通晋级描述更强。"
     : match.bracket === "胜者组"
       ? "胜者能继续保留更短路径和更高容错，败者会被迫去败者组承压。"
-      : "这场会影响排名主动权，适合结合赛前讨论和赛后风向观察。";
+      : match.bracket === "淘汰赛"
+        ? "这类资格赛不应按 0-0 积分榜理解，真正看点是谁能先在 BO5 路径里拿到晋级主动权。"
+        : "这场会影响排名主动权，适合结合赛前讨论和赛后风向观察。";
   return [identity, rivalry ? `叙事上属于${rivalry}。` : "", buzzLine, stakes].filter(Boolean).join("");
+}
+
+function displayAudienceTags(profile) {
+  const priority = ["刚爆冷", "生死线", "主动权", "顶级关注", "高关注", "稳定粉丝", "新闻", "赛区变量"];
+  return (profile.tags || [])
+    .slice()
+    .sort((a, b) => {
+      const ai = priority.findIndex((item) => a.includes(item));
+      const bi = priority.findIndex((item) => b.includes(item));
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    })
+    .slice(0, 2);
+}
+
+function hasAudienceTag(profile, pattern) {
+  return (profile.tags || []).some((tag) => tag.includes(pattern));
 }
 
 function buzzSummary(left, leftBuzz, right, rightBuzz) {
@@ -1225,7 +1311,7 @@ function audienceChips(match, leftProfile, rightProfile, leftBuzz, rightBuzz) {
   const chips = [];
   if (match.bracket) chips.push(match.bracket);
   if (leftBuzz.count + rightBuzz.count) chips.push("新闻热度");
-  chips.push(...leftProfile.tags.slice(0, 1), ...rightProfile.tags.slice(0, 1));
+  chips.push(...displayAudienceTags(leftProfile).slice(0, 1), ...displayAudienceTags(rightProfile).slice(0, 1));
   return Array.from(new Set(chips)).slice(0, 4);
 }
 
@@ -1383,8 +1469,9 @@ function regularFocusCandidates(tournament, teams) {
   const config = focusConfig(tournament);
   const sorted = teams.slice().sort((a, b) => a.rank - b.rank);
   const advanceSlots = tournament.rules.advanceSlots || Math.min(6, Math.ceil(sorted.length / 2));
-  const topCut = closeCutRace(sorted, tournament.rules.byeSlots || 2, tournament.rules.labels?.bye || "前二复活甲");
-  const playoffCut = closeCutRace(sorted, advanceSlots, tournament.rules.labels?.advance || "季后赛席位");
+  const meaningful = standingsRaceIsMeaningful(tournament, sorted);
+  const topCut = meaningful ? closeCutRace(sorted, tournament.rules.byeSlots || 2, tournament.rules.labels?.bye || "前二复活甲") : null;
+  const playoffCut = meaningful ? closeCutRace(sorted, advanceSlots, tournament.rules.labels?.advance || "季后赛席位") : null;
   const nextDirect = nextDirectRankingMatch(tournament, sorted, advanceSlots);
 
   if (topCut && sorted.length >= 4 && shouldUseFocus(config, "bye_cut")) {
@@ -1430,12 +1517,23 @@ function regularFocusCandidates(tournament, teams) {
     candidates.push({
       score: 50,
       tone: "watch",
-      headline: `${tournament.name} 当前主要看官方积分榜稳定性。`,
-      body: `排名前列为 ${top.map((team) => `${team.name}(${team.wins}-${team.losses})`).join("、")}，后续焦点会随胜场差和剩余赛程自动切换。`,
-      chips: ["常规赛", "积分榜"]
+      headline: meaningful ? `${tournament.name} 当前主要看官方积分榜稳定性。` : `${tournament.name} 当前刚进入新阶段，先看首轮对阵。`,
+      body: meaningful
+        ? `排名前列为 ${top.map((team) => `${team.name}(${team.wins}-${team.losses})`).join("、")}，后续焦点会随胜场差和剩余赛程自动切换。`
+        : `目前各队战绩还没有拉开，系统不会把 0-0 排名误读成锁定席位或复活甲争夺；真正焦点应放在首轮对阵、赛制路径和队伍近期话题。`,
+      chips: meaningful ? ["常规赛", "积分榜"] : ["新阶段", "首轮对阵"]
     });
   }
   return candidates;
+}
+
+function standingsRaceIsMeaningful(tournament, sorted) {
+  if (focusConfig(tournament).avoid?.includes("standings_table")) return false;
+  const finishedMatches = tournament.matches.filter((match) => match.status === "finished").length;
+  const playedTeams = sorted.filter((team) => (team.wins || 0) + (team.losses || 0) > 0).length;
+  if (!finishedMatches && !playedTeams) return false;
+  if (playedTeams < Math.max(2, Math.ceil(sorted.length / 3))) return false;
+  return true;
 }
 
 function shouldUseFocus(config, key) {
@@ -1735,6 +1833,17 @@ async function enhanceAnalysisWithLlm(provider, tournament, analysis) {
   return true;
 }
 
+function buildChatPrompt(question) {
+  return [
+    `用户问题：${question}`,
+    "请直接回答，但按中国电竞观众能看懂、愿意看完的赛前专栏风格组织。",
+    "如果问题涉及黑马、预测、焦点或谁更值得看，先给明确结论，再分段说明：黑马/话题身份、双方当前路径、关键胜负手、可能翻盘条件、风险和不确定性。",
+    "允许有标题感和营销号式表达，但证据必须来自结构化数据里的赛程、比分、签表、晋级权益、新闻标题和 audienceSignals；不要编造未提供的选手数据、赔率、历史交锋或赛果。",
+    "如果结构化数据不足以支撑判断，要明确说缺哪类数据，并给出基于现有信息的保守判断。",
+    "回答尽量具体到哪些比赛/哪场 BO5/哪支队伍的路径会改变，避免只说“主动权”“复活甲”“晋级形势”这种空话。"
+  ].join("\n");
+}
+
 function parseJsonFromLlm(text) {
   const raw = String(text || "").trim();
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -2032,7 +2141,7 @@ async function handleApi(req, res) {
     let answer = answerLocally(body.question || "", tournament, analysis);
     if (provider !== "local") {
       try {
-        const llm = await callLlm(provider, `用户问题：${body.question}\n请直接回答，并指出依据。`, compactContext(tournament, analysis));
+        const llm = await callLlm(provider, buildChatPrompt(body.question || ""), compactContext(tournament, analysis));
         if (llm) answer = llm;
       } catch (error) {
         answer += `\n\n模型接口暂不可用，已使用本地规则引擎回答。错误：${error.message}`;

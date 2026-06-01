@@ -106,7 +106,7 @@
       "id": "lck-regular",
       "match": {
         "league": ["lck"],
-        "stage": ["rounds", "regular", "2026"]
+        "stage": ["rounds", "regular"]
       },
       "rules": {
         "format": "LCK 常规赛官方积分榜",
@@ -124,6 +124,29 @@
       "focus": {
         "prefer": ["bye_cut", "advance_cut", "direct_match"],
         "requireOpenRace": true
+      }
+    },
+    {
+      "id": "lck-road-to-msi",
+      "match": {
+        "league": ["lck"],
+        "stage": ["road to msi"]
+      },
+      "rules": {
+        "format": "LCK Road to MSI 资格赛路径",
+        "phase": "playoffs",
+        "advanceSlots": 0,
+        "eliminationSlots": 0,
+        "labels": {
+          "final": "MSI 资格路径",
+          "watch": "待战队伍"
+        },
+        "tiebreakers": ["资格赛签表", "BO5 胜负关系", "官方晋级规则"]
+      },
+      "focus": {
+        "playoffMode": "qualification_path",
+        "prefer": ["direct_match", "audience_focus"],
+        "avoid": ["standings_table", "bye_cut", "advance_cut"]
       }
     }
   ]

@@ -351,10 +351,19 @@ function renderQuickQuestions() {
 }
 
 function buildQuickQuestions() {
-  const questions = [
+  const questions = [];
+  const focusStories = state.analysis.focusStories || [];
+  focusStories.slice(0, 2).forEach((story) => {
+    const label = (story.chips?.[0] || story.headline || "赛区焦点").slice(0, 8);
+    questions.push({
+      label,
+      question: `${story.headline} 请像赛前专栏一样详细分析：谁是黑马，谁更被看好，胜负手是什么？`
+    });
+  });
+  questions.push(
     { label: "整体形势", question: `${state.tournament.name} 现在整体晋级形势如何？` },
     { label: "关键比赛", question: `${state.tournament.name} 接下来哪场比赛最关键？` }
-  ];
+  );
   if (state.tournament.rules?.phase === "playoffs") {
     const stakeCard = state.analysis.phaseView?.cards?.find((card) => card.stake?.headline);
     const next = state.tournament.matches.find((match) => match.status !== "finished");

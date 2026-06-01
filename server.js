@@ -1,6 +1,11 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { loadEnvFile } = require("./src/env");
+const { createStaticHandler, readBody, sendJson } = require("./src/http-utils");
+const { callLlm } = require("./src/llm-client");
+const { buildNewsCoverSvg, generatedNewsCoverUrl } = require("./src/news-cover");
+const { TEAM_AUDIENCE_BASELINES } = require("./src/audience-baselines");
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = __dirname;
@@ -9,65 +14,11 @@ const DATA_FILE = path.join(ROOT, "data", "tournaments.json");
 const RULES_FILE = path.join(ROOT, "data", "rules.json");
 const ENV_FILE = path.join(ROOT, ".env");
 
-loadEnvFile();
+loadEnvFile(ENV_FILE);
 
 const LIVE_CACHE_TTL_MS = Number(process.env.LIVE_CACHE_TTL_MS || 5 * 60 * 1000);
 const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60 * 1000);
 const newsCache = new Map();
-
-const TEAM_AUDIENCE_BASELINES = {
-  T1: { heat: 100, aliases: ["t1", "faker"] },
-  GEN: { heat: 92, aliases: ["gen", "geng", "gen.g", "generation gaming"] },
-  HLE: { heat: 78, aliases: ["hle", "hanwha"] },
-  DK: { heat: 76, aliases: ["dk", "dplus", "damwon"] },
-  KT: { heat: 72, aliases: ["kt", "kt rolster"] },
-  BRO: { heat: 48, aliases: ["bro", "brion"] },
-  BLG: { heat: 96, aliases: ["blg", "bilibili gaming", "bin", "knight"] },
-  TES: { heat: 92, aliases: ["tes", "top esports", "jackeylove", "369"] },
-  JDG: { heat: 86, aliases: ["jdg", "jd gaming", "ruler"] },
-  EDG: { heat: 88, aliases: ["edg", "edward gaming"] },
-  IG: { heat: 82, aliases: ["ig", "invictus gaming"] },
-  WBG: { heat: 84, aliases: ["wbg", "weibo gaming", "the shy", "theshy"] },
-  AL: { heat: 64, aliases: ["al", "anyone's legend", "anyone legend"] },
-  TT: { heat: 58, aliases: ["tt", "thundertalk"] },
-  LGD: { heat: 56, aliases: ["lgd"] },
-  WE: { heat: 70, aliases: ["we", "team we"] },
-  NIP: { heat: 60, aliases: ["nip", "ninjas in pyjamas"] },
-  G2: { heat: 94, aliases: ["g2", "g2 esports", "caps"] },
-  FNC: { heat: 88, aliases: ["fnc", "fnatic"] },
-  KC: { heat: 86, aliases: ["kc", "karmine corp"] },
-  MKOI: { heat: 72, aliases: ["mkoi", "koi", "movistar koi"] },
-  VIT: { heat: 76, aliases: ["vit", "vitality", "team vitality"] },
-  GX: { heat: 52, aliases: ["gx", "giantx"] },
-  C9: { heat: 86, aliases: ["c9", "cloud9"] },
-  TL: { heat: 84, aliases: ["tl", "team liquid"] },
-  FLY: { heat: 74, aliases: ["fly", "flyquest"] },
-  "100T": { heat: 70, aliases: ["100t", "100 thieves"] },
-  PSG: { heat: 78, aliases: ["psg", "psg talon"] },
-  CFO: { heat: 62, aliases: ["cfo", "ctbc flying oyster"] },
-  GAM: { heat: 70, aliases: ["gam", "gam esports"] }
-};
-
-const mimeTypes = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp"
-};
-
-const COVER_PALETTES = {
-  LPL: ["#111827", "#c81e1e", "#f59e0b"],
-  LCK: ["#07111f", "#0ea5e9", "#a78bfa"],
-  LEC: ["#111827", "#f97316", "#facc15"],
-  LCS: ["#0f172a", "#2563eb", "#22c55e"],
-  LCP: ["#111827", "#14b8a6", "#e879f9"],
-  default: ["#101828", "#0f766e", "#e8475b"]
-};
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -79,54 +30,6 @@ function readRules() {
   } catch (error) {
     return { profiles: [] };
   }
-}
-
-function loadEnvFile() {
-  if (!fs.existsSync(ENV_FILE)) return;
-  const lines = fs.readFileSync(ENV_FILE, "utf8").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
-    const index = trimmed.indexOf("=");
-    const key = trimmed.slice(0, index).trim();
-    const rawValue = trimmed.slice(index + 1).trim();
-    const value = rawValue.replace(/^["']|["']$/g, "");
-    if (key && process.env[key] == null) process.env[key] = value;
-  }
-}
-
-function sendJson(res, status, payload) {
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store"
-  });
-  res.end(body);
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 1_000_000) {
-        reject(new Error("Request body too large"));
-        req.destroy();
-      }
-    });
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
-}
-
-function getTournament(id) {
-  const data = readJson(DATA_FILE);
-  return data.tournaments.find((item) => item.id === id) || data.tournaments[0];
 }
 
 function getTournamentFromData(data, id) {
@@ -1972,60 +1875,6 @@ function buildPlayoffTeamPaths(phaseView) {
   return Array.from(paths.values());
 }
 
-async function callLlm(provider, prompt, context) {
-  const providers = {
-    deepseek: {
-      key: process.env.DEEPSEEK_API_KEY,
-      url: "https://api.deepseek.com/chat/completions",
-      model: process.env.DEEPSEEK_MODEL || "deepseek-chat"
-    },
-    qwen: {
-      key: process.env.DASHSCOPE_API_KEY,
-      url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-      model: process.env.QWEN_MODEL || "qwen-plus"
-    },
-    kimi: {
-      key: process.env.MOONSHOT_API_KEY,
-      url: "https://api.moonshot.cn/v1/chat/completions",
-      model: process.env.KIMI_MODEL || "moonshot-v1-8k"
-    },
-    zhipu: {
-      key: process.env.ZHIPU_API_KEY,
-      url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-      model: process.env.ZHIPU_MODEL || "glm-4-flash"
-    }
-  };
-  const config = providers[provider] || providers.deepseek;
-  if (!config.key) return null;
-
-  const response = await fetch(config.url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${config.key}`
-    },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: 0.2,
-      messages: [
-        {
-          role: "system",
-          content: "你是面向中国观众的电竞赛事数据分析 Agent。必须基于给定结构化数据回答，不要编造未提供的赛果。若 contextGuardrail 标明当前是季后赛/淘汰赛，严禁把 0-0 当常规赛战绩，严禁说官方排名第几、小分、晋级线胜场差；必须改用 phaseView.cards、已结束比分、未赛 BO、胜败者组路径和 rules 分析。若 standingsSource 不是 official，只能说明这是近期赛程推算，不能宣称锁定晋级或理论淘汰。分析晋级形势时必须同时考虑赛制 rules、官方排名、小分/局分和加赛规则；不确定时明确说明以官方公告为准。用中文，结论明确，适合网页展示。"
-        },
-        {
-          role: "user",
-          content: `结构化数据：${context}\n\n任务：${prompt}`
-        }
-      ]
-    })
-  });
-  if (!response.ok) {
-    throw new Error(`LLM request failed: ${response.status}`);
-  }
-  const json = await response.json();
-  return json.choices?.[0]?.message?.content || null;
-}
-
 async function enhanceAnalysisWithLlm(provider, tournament, analysis, newsItems = []) {
   const prompt = [
     "请基于结构化数据输出 JSON，不要输出 Markdown。",
@@ -2726,89 +2575,6 @@ function fallbackNews(tournament = null) {
   ];
 }
 
-function buildNewsCoverSvg({ title, source, league }) {
-  const palette = COVER_PALETTES[league] || COVER_PALETTES.default;
-  const safeTitle = escapeSvgText(title || "赛事焦点");
-  const safeSource = escapeSvgText(source || "MatchMind Esports");
-  const safeLeague = escapeSvgText(league && league !== "default" ? league : "MATCHMIND");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img" aria-label="${safeTitle}">
-  <defs>
-    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0" stop-color="${palette[0]}"/>
-      <stop offset="0.58" stop-color="${palette[1]}"/>
-      <stop offset="1" stop-color="${palette[2]}"/>
-    </linearGradient>
-    <radialGradient id="spot" cx="70%" cy="18%" r="55%">
-      <stop offset="0" stop-color="#fff" stop-opacity=".26"/>
-      <stop offset=".52" stop-color="#fff" stop-opacity=".08"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
-    </radialGradient>
-    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
-      <path d="M56 0H0V56" fill="none" stroke="#fff" stroke-opacity=".09"/>
-    </pattern>
-  </defs>
-  <rect width="1200" height="675" fill="url(#bg)"/>
-  <rect width="1200" height="675" fill="url(#grid)"/>
-  <rect width="1200" height="675" fill="url(#spot)"/>
-  <circle cx="1010" cy="125" r="170" fill="#fff" fill-opacity=".12"/>
-  <circle cx="135" cy="575" r="230" fill="#020617" fill-opacity=".28"/>
-  <path d="M76 500H1124" stroke="#fff" stroke-opacity=".22" stroke-width="2"/>
-  <g fill="#fff" font-family="Arial, 'Microsoft YaHei', sans-serif">
-    <text x="74" y="115" font-size="34" font-weight="900" opacity=".78">${safeLeague}</text>
-    <text x="74" y="170" font-size="26" font-weight="700" opacity=".72">${safeSource}</text>
-    ${svgTitleLines(safeTitle).map((line, index) => `<text x="74" y="${290 + index * 76}" font-size="62" font-weight="900">${line}</text>`).join("")}
-    <text x="76" y="565" font-size="28" font-weight="800" opacity=".82">Real-time schedule · Bracket · AI analysis</text>
-  </g>
-</svg>`;
-}
-
-function svgTitleLines(title) {
-  const text = String(title || "赛事焦点").replace(/\s+/g, " ").trim();
-  const lines = [];
-  let current = "";
-  for (const char of text) {
-    const next = current + char;
-    const limit = /[^\x00-\xff]/.test(next) ? 14 : 26;
-    if (next.length > limit && current) {
-      lines.push(current);
-      current = char;
-    } else {
-      current = next;
-    }
-    if (lines.length >= 2) break;
-  }
-  if (current && lines.length < 2) lines.push(current);
-  return lines.length ? lines : ["赛事焦点"];
-}
-
-function escapeSvgText(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;");
-}
-
-function generatedNewsCoverUrl(item, tournament = null) {
-  const title = normalizeNewsTitle(item?.title || "赛事焦点");
-  const league = leagueLabelFromTournament(tournament) || leagueLabelFromText(`${item?.source || ""} ${title}`);
-  const params = new URLSearchParams({
-    title,
-    source: String(item?.source || league || "MatchMind").slice(0, 40),
-    league: league || "default"
-  });
-  return `/api/news-cover?${params.toString()}`;
-}
-
-function leagueLabelFromTournament(tournament) {
-  return String(tournament?.name || "").split(/[ ·:：\s]+/)[0] || "";
-}
-
-function leagueLabelFromText(value) {
-  const upper = String(value || "").toUpperCase();
-  return ["LPL", "LCK", "LEC", "LCS", "LCP"].find((league) => upper.includes(league)) || "";
-}
-
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/api/news-cover") {
@@ -3029,26 +2795,7 @@ function findRelevantPhaseCard(question, cards) {
   }) || null;
 }
 
-function serveStatic(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const requested = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-  const filePath = path.normalize(path.join(PUBLIC_DIR, requested));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403);
-    res.end("Forbidden");
-    return;
-  }
-  fs.readFile(filePath, (error, content) => {
-    if (error) {
-      res.writeHead(404);
-      res.end("Not found");
-      return;
-    }
-    const type = mimeTypes[path.extname(filePath)] || "application/octet-stream";
-    res.writeHead(200, { "content-type": type });
-    res.end(content);
-  });
-}
+const serveStatic = createStaticHandler(PUBLIC_DIR);
 
 const server = http.createServer(async (req, res) => {
   try {

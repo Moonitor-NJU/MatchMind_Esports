@@ -60,6 +60,15 @@ const mimeTypes = {
   ".webp": "image/webp"
 };
 
+const COVER_PALETTES = {
+  LPL: ["#111827", "#c81e1e", "#f59e0b"],
+  LCK: ["#07111f", "#0ea5e9", "#a78bfa"],
+  LEC: ["#111827", "#f97316", "#facc15"],
+  LCS: ["#0f172a", "#2563eb", "#22c55e"],
+  LCP: ["#111827", "#14b8a6", "#e879f9"],
+  default: ["#101828", "#0f766e", "#e8475b"]
+};
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
@@ -2315,6 +2324,9 @@ async function fetchNewsItems(tournament = null) {
     .map((item) => ({ ...item, relevance: newsRelevance(item, tournament, tournamentNames) }))
     .filter((item) => isUsableNewsItem(item, tournament));
   const pool = tournament ? scored.filter((item) => item.relevance > 0) : scored;
+  const visualFillers = tournament
+    ? scored.filter((item) => item.relevance <= 0 && isVisualNewsFiller(item))
+    : [];
   for (const item of pool
     .sort((a, b) => b.relevance - a.relevance || new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
     const key = normalizeUrl(item.url);
@@ -2322,6 +2334,15 @@ async function fetchNewsItems(tournament = null) {
     seen.add(key);
     deduped.push(item);
     if (deduped.length >= 8) break;
+  }
+  if (tournament && deduped.length < 4) {
+    for (const item of visualFillers.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
+      const key = normalizeUrl(item.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      deduped.push({ ...item, visualFiller: true });
+      if (deduped.length >= 4) break;
+    }
   }
   if (tournament && deduped.length < 4) {
     for (const item of fallbackNews(tournament)) {
@@ -2394,7 +2415,7 @@ async function fetchNewsSource(source) {
     const image = item.image || await fetchArticleImage(item.url).catch(() => null);
     enriched.push({
       ...item,
-      image: image || "/news-placeholder.svg"
+      image: image || generatedNewsCoverUrl(item, null)
     });
   }
   return enriched;
@@ -2511,6 +2532,14 @@ function isUsableNewsItem(item, tournament = null) {
   if (yearMatch && Number(yearMatch[1]) < currentYear) return false;
   if (tournament && String(item.source || "").includes("Bing搜索") && !searchResultLooksCurrent(item, tournament)) return false;
   return true;
+}
+
+function isVisualNewsFiller(item) {
+  const image = String(item.image || "");
+  if (!image || image.includes("news-cover?") || image.includes("news-placeholder.svg")) return false;
+  const source = String(item.source || "");
+  const ageDays = Math.max(0, (Date.now() - Date.parse(item.publishedAt || new Date())) / 86_400_000);
+  return ageDays <= 60 && /lolesports|leagueoflegends|riot|英雄联盟/i.test(source);
 }
 
 function searchResultLooksCurrent(item, tournament) {
@@ -2677,7 +2706,11 @@ function fallbackNews(tournament = null) {
       description: match.reason,
       source: "MatchMind 赛区焦点",
       url: "#analysis",
-      image: "/news-placeholder.svg",
+      image: generatedNewsCoverUrl({
+        title: `${match.left} vs ${match.right}`,
+        source: tournament.name,
+        description: match.tag
+      }, tournament),
       publishedAt: match.startsAt || new Date().toISOString()
     }));
     if (items.length) return items;
@@ -2687,14 +2720,111 @@ function fallbackNews(tournament = null) {
       title: "实时赛事焦点正在更新",
       source: "MatchMind",
       url: "#analysis",
-      image: "/news-placeholder.svg",
+      image: generatedNewsCoverUrl({ title: "赛事焦点正在更新", source: "MatchMind" }, tournament),
       publishedAt: new Date().toISOString()
     }
   ];
 }
 
+function buildNewsCoverSvg({ title, source, league }) {
+  const palette = COVER_PALETTES[league] || COVER_PALETTES.default;
+  const safeTitle = escapeSvgText(title || "赛事焦点");
+  const safeSource = escapeSvgText(source || "MatchMind Esports");
+  const safeLeague = escapeSvgText(league && league !== "default" ? league : "MATCHMIND");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" role="img" aria-label="${safeTitle}">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="${palette[0]}"/>
+      <stop offset="0.58" stop-color="${palette[1]}"/>
+      <stop offset="1" stop-color="${palette[2]}"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="70%" cy="18%" r="55%">
+      <stop offset="0" stop-color="#fff" stop-opacity=".26"/>
+      <stop offset=".52" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M56 0H0V56" fill="none" stroke="#fff" stroke-opacity=".09"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <rect width="1200" height="675" fill="url(#grid)"/>
+  <rect width="1200" height="675" fill="url(#spot)"/>
+  <circle cx="1010" cy="125" r="170" fill="#fff" fill-opacity=".12"/>
+  <circle cx="135" cy="575" r="230" fill="#020617" fill-opacity=".28"/>
+  <path d="M76 500H1124" stroke="#fff" stroke-opacity=".22" stroke-width="2"/>
+  <g fill="#fff" font-family="Arial, 'Microsoft YaHei', sans-serif">
+    <text x="74" y="115" font-size="34" font-weight="900" opacity=".78">${safeLeague}</text>
+    <text x="74" y="170" font-size="26" font-weight="700" opacity=".72">${safeSource}</text>
+    ${svgTitleLines(safeTitle).map((line, index) => `<text x="74" y="${290 + index * 76}" font-size="62" font-weight="900">${line}</text>`).join("")}
+    <text x="76" y="565" font-size="28" font-weight="800" opacity=".82">Real-time schedule · Bracket · AI analysis</text>
+  </g>
+</svg>`;
+}
+
+function svgTitleLines(title) {
+  const text = String(title || "赛事焦点").replace(/\s+/g, " ").trim();
+  const lines = [];
+  let current = "";
+  for (const char of text) {
+    const next = current + char;
+    const limit = /[^\x00-\xff]/.test(next) ? 14 : 26;
+    if (next.length > limit && current) {
+      lines.push(current);
+      current = char;
+    } else {
+      current = next;
+    }
+    if (lines.length >= 2) break;
+  }
+  if (current && lines.length < 2) lines.push(current);
+  return lines.length ? lines : ["赛事焦点"];
+}
+
+function escapeSvgText(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;");
+}
+
+function generatedNewsCoverUrl(item, tournament = null) {
+  const title = normalizeNewsTitle(item?.title || "赛事焦点");
+  const league = leagueLabelFromTournament(tournament) || leagueLabelFromText(`${item?.source || ""} ${title}`);
+  const params = new URLSearchParams({
+    title,
+    source: String(item?.source || league || "MatchMind").slice(0, 40),
+    league: league || "default"
+  });
+  return `/api/news-cover?${params.toString()}`;
+}
+
+function leagueLabelFromTournament(tournament) {
+  return String(tournament?.name || "").split(/[ ·:：\s]+/)[0] || "";
+}
+
+function leagueLabelFromText(value) {
+  const upper = String(value || "").toUpperCase();
+  return ["LPL", "LCK", "LEC", "LCS", "LCP"].find((league) => upper.includes(league)) || "";
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === "/api/news-cover") {
+    const svg = buildNewsCoverSvg({
+      title: url.searchParams.get("title") || "赛事焦点",
+      source: url.searchParams.get("source") || "MatchMind",
+      league: url.searchParams.get("league") || "default"
+    });
+    res.writeHead(200, {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "public, max-age=86400"
+    });
+    res.end(svg);
+    return;
+  }
+
   if (url.pathname === "/api/tournaments") {
     const data = await getTournamentData({ refresh: url.searchParams.get("refresh") === "1" });
     sendJson(res, 200, data);

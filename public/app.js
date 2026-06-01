@@ -22,6 +22,7 @@ const els = {
   liveCount: document.querySelector("#liveCount"),
   keyCount: document.querySelector("#keyCount"),
   advanceSlots: document.querySelector("#advanceSlots"),
+  advanceSlotsLabel: document.querySelector("#advanceSlotsLabel"),
   newsStage: document.querySelector("#newsStage"),
   newsRail: document.querySelector("#newsRail"),
   focusStrip: document.querySelector("#focusStrip"),
@@ -213,7 +214,14 @@ function renderHeader() {
   els.heroSummary.textContent = firstLine(state.analysis.summary);
   els.liveCount.textContent = live;
   els.keyCount.textContent = state.analysis.keyMatches.filter((item) => item.importance !== "低").length;
-  els.advanceSlots.textContent = state.tournament.rules.phase === "playoffs" ? state.analysis.phaseView?.upcomingCount || 0 : state.tournament.rules.advanceSlots;
+  const isPlayoffs = state.tournament.rules.phase === "playoffs";
+  if (isPlayoffs) {
+    els.advanceSlots.textContent = state.analysis.phaseView?.upcomingCount || 0;
+    els.advanceSlotsLabel.textContent = "待赛 BO";
+  } else {
+    els.advanceSlots.textContent = state.tournament.rules.advanceSlots || 0;
+    els.advanceSlotsLabel.textContent = "晋级名额";
+  }
 }
 
 function renderFocus() {

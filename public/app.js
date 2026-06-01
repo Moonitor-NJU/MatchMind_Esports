@@ -34,6 +34,7 @@ const els = {
   analysisText: document.querySelector("#analysisText"),
   keyMatches: document.querySelector("#keyMatches"),
   scenarioMatch: document.querySelector("#scenarioMatch"),
+  scoreButtons: document.querySelector("#scoreButtons"),
   scenarioResult: document.querySelector("#scenarioResult"),
   chatLog: document.querySelector("#chatLog"),
   chatForm: document.querySelector("#chatForm"),
@@ -339,8 +340,28 @@ function renderScenarioOptions() {
   els.scenarioMatch.innerHTML = openMatches.map((match) => {
     const left = teamById(match.teams[0]).name;
     const right = teamById(match.teams[1]).name;
-    return `<option value="${match.id}">${formatDate(match.startsAt)} · ${left} vs ${right}</option>`;
+    return `<option value="${match.id}">${formatDate(match.startsAt)} · ${left} vs ${right} · BO${match.bestOf}</option>`;
   }).join("");
+  renderScenarioScoreButtons();
+}
+
+function renderScenarioScoreButtons() {
+  const match = state.tournament.matches.find((item) => item.id === els.scenarioMatch.value);
+  if (!match) {
+    els.scoreButtons.innerHTML = "";
+    return;
+  }
+  const target = Math.floor(Number(match.bestOf || 3) / 2) + 1;
+  const scores = [];
+  for (let loser = 0; loser < target; loser += 1) scores.push({ left: target, right: loser });
+  for (let loser = target - 1; loser >= 0; loser -= 1) scores.push({ left: loser, right: target });
+  els.scoreButtons.innerHTML = [
+    `<button data-action="predict">AI 预测</button>`,
+    ...scores.map((score) => {
+      const side = score.left > score.right ? "左" : "右";
+      return `<button data-left="${score.left}" data-right="${score.right}">${side} ${score.left}:${score.right}</button>`;
+    })
+  ].join("");
 }
 
 function renderQuickQuestions() {
@@ -500,32 +521,50 @@ els.quickQuestions.addEventListener("click", (event) => {
   ask(button.dataset.question);
 });
 
-document.querySelectorAll(".score-buttons button").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const matchId = els.scenarioMatch.value;
-    if (!matchId) return;
-    els.scenarioResult.textContent = "正在重算假设结果...";
-    const scenario = {
-      [matchId]: {
-        left: Number(button.dataset.left),
-        right: Number(button.dataset.right)
+els.scenarioMatch.addEventListener("change", renderScenarioScoreButtons);
+
+els.scoreButtons.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  const matchId = els.scenarioMatch.value;
+  if (!matchId) return;
+  if (button.dataset.action === "predict") {
+      els.scenarioResult.textContent = state.provider === "local"
+        ? "正在生成本地赛前预测..."
+        : "正在调用模型生成赛前预测...";
+      try {
+        const data = await requestJson("/api/prediction", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            tournamentId: state.tournament.id,
+            matchId,
+            provider: state.provider
+          })
+        });
+        els.scenarioResult.textContent = data.prediction;
+      } catch (error) {
+        els.scenarioResult.textContent = `预测失败：${error.message}`;
       }
-    };
-    try {
-      const data = await requestJson("/api/scenario", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ tournamentId: state.tournament.id, scenario })
-      });
-      const match = state.tournament.matches.find((item) => item.id === matchId);
-      const left = teamById(match.teams[0]).name;
-      const right = teamById(match.teams[1]).name;
-      const top = data.analysis.teams.slice(0, state.tournament.rules.advanceSlots).map((team) => `${team.rank}.${team.name}(${team.wins}-${team.losses})`).join("  ");
-      els.scenarioResult.textContent = `假设 ${left} ${scenario[matchId].left}:${scenario[matchId].right} ${right}\n晋级区将变为：${top}\n${firstLine(data.analysis.summary)}`;
-    } catch (error) {
-      els.scenarioResult.textContent = `推演失败：${error.message}`;
+      return;
+  }
+  els.scenarioResult.textContent = "正在重算假设结果...";
+  const scenario = {
+    [matchId]: {
+      left: Number(button.dataset.left),
+      right: Number(button.dataset.right)
     }
-  });
+  };
+  try {
+    const data = await requestJson("/api/scenario", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tournamentId: state.tournament.id, scenario })
+    });
+    els.scenarioResult.textContent = data.scenarioText || firstLine(data.analysis.summary);
+  } catch (error) {
+    els.scenarioResult.textContent = `推演失败：${error.message}`;
+  }
 });
 
 els.providerSelect.value = state.provider;

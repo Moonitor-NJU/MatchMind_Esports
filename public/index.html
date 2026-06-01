@@ -134,20 +134,15 @@
         <section class="section simulator">
           <div class="section-head">
             <div>
-              <p class="eyebrow">What If</p>
-              <h3>假设推演</h3>
+              <p class="eyebrow">Prediction</p>
+              <h3>赛前预测</h3>
             </div>
           </div>
           <div class="simulator-controls">
             <select id="scenarioMatch" class="light-select"></select>
-            <div class="score-buttons">
-              <button data-left="2" data-right="0">左 2:0</button>
-              <button data-left="2" data-right="1">左 2:1</button>
-              <button data-left="1" data-right="2">右 2:1</button>
-              <button data-left="0" data-right="2">右 2:0</button>
-            </div>
+            <div class="score-buttons" id="scoreButtons"></div>
           </div>
-          <div id="scenarioResult" class="scenario-result">选择一场未结束比赛，系统会重新计算假设结果下的排名和晋级形势。</div>
+          <div id="scenarioResult" class="scenario-result">选择一场未结束比赛，点击 AI 预测会结合当前赛程、签表和焦点信号给出赛前判断；比分按钮仍可做假设推演。</div>
         </section>
 
         <section id="agent" class="section agent">

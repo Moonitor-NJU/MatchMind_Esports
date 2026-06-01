@@ -942,6 +942,12 @@ td {
   font-weight: 800;
 }
 
+.score-buttons button[data-action="predict"] {
+  border-color: transparent;
+  background: var(--ink);
+  color: #ffffff;
+}
+
 .scenario-result {
   min-height: 60px;
   padding: 14px;

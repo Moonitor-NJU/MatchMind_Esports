@@ -7,7 +7,8 @@ const state = {
   newsIndex: 0,
   newsTimer: null,
   filter: "all",
-  provider: "local"
+  provider: "local",
+  analysisRequestId: 0
 };
 
 const els = {
@@ -96,6 +97,10 @@ async function loadNews(options = {}) {
 }
 
 async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
+  const requestId = ++state.analysisRequestId;
+  const previousTournamentId = state.tournament?.id;
+  const switchingTournament = previousTournamentId && tournamentId && previousTournamentId !== tournamentId;
+  if (switchingTournament) clearTournamentPanels();
   els.heroSummary.textContent = "正在重新计算赛程影响和晋级形势...";
   const params = new URLSearchParams({
     tournament: tournamentId,
@@ -103,11 +108,13 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
   });
   if (options.refresh) params.set("refresh", "1");
   const data = await requestJson(`/api/analyze?${params.toString()}`);
+  if (requestId !== state.analysisRequestId) return;
   state.tournament = data.tournament;
   state.analysis = data.analysis;
   state.meta = data.meta || state.meta;
   els.tournamentSelect.value = state.tournament.id;
   renderAll();
+  if (switchingTournament) resetAgentForTournament();
 }
 
 function renderAll() {
@@ -119,6 +126,23 @@ function renderAll() {
   renderAnalysis();
   renderScenarioOptions();
   renderQuickQuestions();
+}
+
+function clearTournamentPanels() {
+  els.matchList.innerHTML = `<div class="key-item"><strong>正在切换赛事</strong><p>正在读取新赛区赛程...</p></div>`;
+  els.phaseCards.innerHTML = "";
+  els.standingsBody.innerHTML = "";
+  els.analysisText.innerHTML = `<p>正在读取新赛区分析...</p>`;
+  els.keyMatches.innerHTML = "";
+  els.scenarioMatch.innerHTML = "";
+  els.scoreButtons.innerHTML = "";
+  els.scenarioResult.textContent = "正在切换赛事，预测面板会随新赛区刷新...";
+  els.quickQuestions.innerHTML = "";
+}
+
+function resetAgentForTournament() {
+  els.chatLog.innerHTML = "";
+  addMessage("assistant", `已切换到 ${state.tournament.name}。我会按这个赛区的赛程、签表和规则回答。`);
 }
 
 function renderNews() {
@@ -342,6 +366,9 @@ function renderScenarioOptions() {
     const right = teamById(match.teams[1]).name;
     return `<option value="${match.id}">${formatDate(match.startsAt)} · ${left} vs ${right} · BO${match.bestOf}</option>`;
   }).join("");
+  els.scenarioResult.textContent = openMatches.length
+    ? `已切换到 ${state.tournament.name}。选择未赛比赛后可做 AI 预测或比分推演。`
+    : `${state.tournament.name} 当前没有未赛比赛，预测面板会等待官方后续赛程更新。`;
   renderScenarioScoreButtons();
 }
 
@@ -450,6 +477,7 @@ function addMessage(role, text) {
 
 async function ask(question) {
   if (!question.trim()) return;
+  const requestTournamentId = state.tournament.id;
   addMessage("user", question);
   els.questionInput.value = "";
   const waiting = document.createElement("div");
@@ -467,8 +495,16 @@ async function ask(question) {
         provider: state.provider
       })
     });
+    if (state.tournament.id !== requestTournamentId) {
+      waiting.remove();
+      return;
+    }
     waiting.textContent = data.answer;
   } catch (error) {
+    if (state.tournament.id !== requestTournamentId) {
+      waiting.remove();
+      return;
+    }
     waiting.textContent = `分析失败：${error.message}`;
   }
 }
@@ -528,6 +564,7 @@ els.scoreButtons.addEventListener("click", async (event) => {
   if (!button) return;
   const matchId = els.scenarioMatch.value;
   if (!matchId) return;
+  const requestTournamentId = state.tournament.id;
   if (button.dataset.action === "predict") {
       els.scenarioResult.textContent = state.provider === "local"
         ? "正在生成本地赛前预测..."
@@ -542,8 +579,10 @@ els.scoreButtons.addEventListener("click", async (event) => {
             provider: state.provider
           })
         });
+        if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
         els.scenarioResult.textContent = data.prediction;
       } catch (error) {
+        if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
         els.scenarioResult.textContent = `预测失败：${error.message}`;
       }
       return;
@@ -561,8 +600,10 @@ els.scoreButtons.addEventListener("click", async (event) => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ tournamentId: state.tournament.id, scenario })
     });
+    if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
     els.scenarioResult.textContent = data.scenarioText || firstLine(data.analysis.summary);
   } catch (error) {
+    if (state.tournament.id !== requestTournamentId || els.scenarioMatch.value !== matchId) return;
     els.scenarioResult.textContent = `推演失败：${error.message}`;
   }
 });

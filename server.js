@@ -1017,16 +1017,18 @@ function buildPlayoffView(tournament) {
       right,
       score: result ? `${result.left}:${result.right}` : "未赛",
       winner,
-      loser,
-      impact: playoffImpact(bracket, winner, loser)
+      loser
     };
     const stake = playoffStakeForCard(tournament, card);
     if (stake) {
       card.stake = stake;
-      card.impact = stake.cardImpact || stake.body || card.impact;
     }
     return card;
   });
+  for (const card of cards) {
+    card.outcome = buildPlayoffOutcome(tournament, card, cards);
+    card.impact = card.stake?.cardImpact || card.stake?.body || card.outcome.summary;
+  }
   return {
     type: "playoffs",
     title: "季后赛晋级形势",
@@ -1049,12 +1051,127 @@ function bracketLabel(round = "") {
   return "淘汰赛";
 }
 
-function playoffImpact(bracket, winner, loser) {
-  if (!winner && bracket === "败者组") return `${bracket}待战，胜者晋级下一轮，败者直接淘汰或结束本阶段。`;
-  if (!winner) return `${bracket}待战，胜者继续冲击下一轮，败者将根据签表进入败者组或结束赛程。`;
-  if (bracket === "胜者组") return `${winner} 留在胜者组推进，${loser} 掉入败者组，后续容错明显降低。`;
-  if (bracket === "败者组") return `${winner} 续命晋级，${loser} 被淘汰或结束本阶段。`;
-  return `${winner} 晋级，${loser} 进入下一条签表路径或结束赛程。`;
+function buildPlayoffOutcome(tournament, card, cards) {
+  const rule = playoffOutcomeRule(tournament, card.bracket);
+  const winnerNext = card.winner ? nextCardForTeam(cards, card.winner, card.startsAt) : null;
+  const loserNext = card.loser ? nextCardForTeam(cards, card.loser, card.startsAt) : null;
+  const summary = card.winner
+    ? describeResolvedPlayoffOutcome(card, rule, winnerNext, loserNext)
+    : describeUpcomingPlayoffOutcome(card, rule);
+  return {
+    mode: rule.mode,
+    source: rule.source,
+    winnerPath: rule.winnerPath,
+    loserPath: rule.loserPath,
+    winnerNext: compactNextCard(winnerNext),
+    loserNext: compactNextCard(loserNext),
+    summary
+  };
+}
+
+function playoffOutcomeRule(tournament, bracket) {
+  const config = focusConfig(tournament);
+  const mode = config.playoffMode || inferPlayoffMode(tournament);
+  const source = config.playoffMode ? "项目赛制配置" : "赛制名称推断";
+  if (mode === "double_elimination") {
+    if (bracket === "胜者组") {
+      return {
+        mode,
+        source,
+        winnerPath: "保留胜者组路径，继续争夺更短晋级路线",
+        loserPath: "转入败者组，后续容错降低"
+      };
+    }
+    if (bracket === "败者组") {
+      return {
+        mode,
+        source,
+        winnerPath: "留在败者组继续晋级",
+        loserPath: "被淘汰或结束本阶段赛程"
+      };
+    }
+    if (bracket === "决赛") {
+      return {
+        mode,
+        source,
+        winnerPath: "赢下本阶段决赛或进入最终资格位置",
+        loserPath: "失去本轮争冠/资格主动权"
+      };
+    }
+  }
+  if (mode === "partial_lower_bracket") {
+    if (bracket === "败者组") {
+      return {
+        mode,
+        source,
+        winnerPath: "从败者组继续向决赛路径推进",
+        loserPath: "被淘汰或结束本阶段赛程"
+      };
+    }
+    return {
+      mode,
+      source,
+      winnerPath: "进入后续胜者/决赛路径",
+      loserPath: "掉入后续败者组或等待官方签表确认"
+    };
+  }
+  if (mode === "qualification_path") {
+    return {
+      mode,
+      source,
+      winnerPath: "继续保留资格赛主动权",
+      loserPath: "资格压力显著增加，具体落点以官方签表为准"
+    };
+  }
+  return {
+    mode,
+    source,
+    winnerPath: "进入下一轮或保留后续资格",
+    loserPath: "后续落点需要等待官方签表确认"
+  };
+}
+
+function inferPlayoffMode(tournament) {
+  const text = `${tournament.rules?.format || ""} ${tournament.name || ""}`.toLowerCase();
+  if (text.includes("双败") || text.includes("double")) return "double_elimination";
+  if (text.includes("败者组")) return "partial_lower_bracket";
+  if (text.includes("资格") || text.includes("msi")) return "qualification_path";
+  return "single_or_unknown";
+}
+
+function nextCardForTeam(cards, team, startsAt) {
+  const start = Date.parse(startsAt || 0);
+  return (cards || [])
+    .filter((card) => card.startsAt && Date.parse(card.startsAt) > start && [card.left, card.right].includes(team))
+    .sort((a, b) => String(a.startsAt).localeCompare(String(b.startsAt)))[0] || null;
+}
+
+function compactNextCard(card) {
+  if (!card) return null;
+  return {
+    id: card.id,
+    startsAt: card.startsAt,
+    bracket: card.bracket,
+    left: card.left,
+    right: card.right,
+    status: card.status,
+    score: card.score,
+    bestOf: card.bestOf
+  };
+}
+
+function describeResolvedPlayoffOutcome(card, rule, winnerNext, loserNext) {
+  const winnerNextText = winnerNext
+    ? `${card.winner} 下一站是 ${winnerNext.bracket} ${winnerNext.left} vs ${winnerNext.right}`
+    : `${card.winner} 的下一站当前接口未给出明确占位`;
+  const loserNextText = loserNext
+    ? `${card.loser} 下一站是 ${loserNext.bracket} ${loserNext.left} vs ${loserNext.right}`
+    : `${card.loser} 的后续落点当前接口未给出明确占位`;
+  return `按${rule.source}，${card.winner} ${rule.winnerPath}，${card.loser} ${rule.loserPath}。${winnerNextText}；${loserNextText}。`;
+}
+
+function describeUpcomingPlayoffOutcome(card, rule) {
+  return `按${rule.source}，这场 ${card.bracket} BO${card.bestOf} 的胜者将${rule.winnerPath}，败者将${rule.loserPath}；若官方签表尚未给出下一轮占位，具体对手会在赛后更新。`;
 }
 
 function playoffStakeForCard(tournament, card) {
@@ -1308,9 +1425,9 @@ function audienceBody(match, leftProfile, rightProfile, leftBuzz, rightBuzz, riv
   const buzzLine = buzzSummary(match.left, leftBuzz, match.right, rightBuzz);
   const identity = `${match.left} 带着「${displayAudienceTags(leftProfile).join("、")}」标签，${match.right} 的看点是「${displayAudienceTags(rightProfile).join("、")}」。`;
   const stakes = match.bracket === "败者组"
-    ? "赛制上这是没有容错的 BO5，输的一方会直接结束本阶段或被淘汰，因此情绪价值比普通晋级描述更强。"
+    ? (match.outcome?.summary || "这是败者组高压 BO，具体淘汰/晋级落点以当前规则和官方签表为准。")
     : match.bracket === "胜者组"
-      ? "胜者能继续保留更短路径和更高容错，败者会被迫去败者组承压。"
+      ? (match.outcome?.summary || "这是胜者组路径战，胜负会改变后续签表位置。")
       : match.bracket === "淘汰赛"
         ? "这类资格赛不应按 0-0 积分榜理解，真正看点是谁能先在 BO5 路径里拿到晋级主动权。"
         : "这场会影响排名主动权，适合结合赛前讨论和赛后风向观察。";
@@ -1413,7 +1530,7 @@ function playoffFocusCandidates(tournament, phaseView) {
       score: 96,
       tone: "hot",
       headline: `${lowerNext.left} vs ${lowerNext.right} 是下一场败者组生死战。`,
-      body: `${lowerNext.bracket} BO${lowerNext.bestOf} 没有容错：胜者晋级下一轮，败者直接淘汰或结束本阶段。当前签表已完成：${finishedSummary(finished) || "暂无明确晋级结果"}。`,
+      body: `${lowerNext.outcome?.summary || lowerNext.impact} 当前签表已完成：${finishedSummary(finished) || "暂无明确晋级结果"}。`,
       chips: ["败者组", "生死战", `BO${lowerNext.bestOf}`]
     });
   }
@@ -1433,7 +1550,7 @@ function playoffFocusCandidates(tournament, phaseView) {
       score: 82,
       tone: "watch",
       headline: `${upperNext.left} vs ${upperNext.right} 决定胜者组下一段主动权。`,
-      body: `胜者继续保留更高容错和更短晋级路径，败者会被迫转入败者组或承受更高淘汰风险。`,
+      body: upperNext.outcome?.summary || upperNext.impact,
       chips: ["胜者组", "晋级路径", `BO${upperNext.bestOf}`]
     });
   }
@@ -2078,7 +2195,8 @@ function predictPlayoffMatchLocally(tournament, analysis, match, left, right) {
   const confidence = confidenceGap >= 18 ? "中等偏高" : confidenceGap >= 8 ? "中等" : "接近五五开";
   const bestOfText = `BO${match.bestOf || phaseCard?.bestOf || 5}`;
   const bracketText = phaseCard?.bracket || bracketLabel(match.round);
-  const stakeText = phaseCard?.stake?.body || phaseCard?.impact || playoffImpact(bracketText, null, null);
+  const stakeText = phaseCard?.stake?.body || phaseCard?.outcome?.summary || phaseCard?.impact ||
+    describeUpcomingPlayoffOutcome({ bracket: bracketText, bestOf: match.bestOf || 5 }, playoffOutcomeRule(tournament, bracketText));
   const favoritePath = favorite === left ? leftPath : rightPath;
   const underdogPath = favorite === left ? rightPath : leftPath;
   return [
@@ -2480,7 +2598,22 @@ function buildScenarioText(tournament, scenario, analysis) {
     const loser = leftWins > rightWins ? right : left;
     const bracket = bracketLabel(match.round);
     const original = buildPlayoffView(tournament).cards.find((card) => card.id === match.id);
-    const impact = playoffImpact(bracket, winner, loser);
+    const baseCard = buildPlayoffView(tournament).cards.find((card) => card.id === match.id);
+    const hypotheticalCard = {
+      ...(baseCard || {}),
+      id: match.id,
+      startsAt: match.startsAt,
+      round: match.round,
+      bracket,
+      bestOf: match.bestOf,
+      left,
+      right,
+      score: `${leftWins}:${rightWins}`,
+      status: "finished",
+      winner,
+      loser
+    };
+    const impact = buildPlayoffOutcome(tournament, hypotheticalCard, buildPlayoffView(tournament).cards).summary;
     const stake = original?.stake?.body ? `关键权益：${original.stake.body}` : "";
     return [
       `假设 ${left} ${leftWins}:${rightWins} ${right}。`,

@@ -267,9 +267,9 @@ button {
 
 .news-showcase {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.75fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.95fr);
   gap: 14px;
-  min-height: 360px;
+  min-height: 420px;
 }
 
 .news-showcase.is-single,
@@ -286,6 +286,10 @@ button {
   grid-template-columns: minmax(0, 1.75fr) minmax(260px, 0.55fr);
 }
 
+.news-showcase.is-mosaic {
+  grid-template-columns: minmax(0, 1.32fr) minmax(380px, 0.95fr);
+}
+
 .news-stage,
 .news-rail {
   min-width: 0;
@@ -295,7 +299,7 @@ button {
   position: relative;
   display: block;
   height: 100%;
-  min-height: 360px;
+  min-height: 420px;
   overflow: hidden;
   color: #ffffff;
   text-decoration: none;
@@ -401,6 +405,11 @@ button {
   align-content: start;
 }
 
+.news-showcase.is-mosaic .news-rail {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: stretch;
+}
+
 .news-showcase.is-compact .news-rail {
   grid-auto-rows: max-content;
 }
@@ -420,6 +429,18 @@ button {
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
+.news-showcase.is-mosaic .news-tile {
+  grid-template-columns: 1fr;
+  grid-template-rows: 132px minmax(0, 1fr);
+  min-height: 198px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.news-showcase.is-mosaic .news-tile > div {
+  padding: 10px 12px 12px;
+}
+
 .news-showcase.is-compact .news-tile {
   min-height: auto;
   padding: 8px;
@@ -427,6 +448,11 @@ button {
 
 .news-showcase.is-compact .news-tile img {
   height: 68px;
+}
+
+.news-showcase.is-mosaic .news-tile img {
+  height: 132px;
+  border-radius: 0;
 }
 
 .news-tile.active,
@@ -1085,6 +1111,26 @@ td {
 
   .news-hero {
     min-height: 260px;
+  }
+
+  .news-showcase.is-mosaic .news-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .news-showcase.is-mosaic .news-tile {
+    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-rows: auto;
+    min-height: 86px;
+    padding: 8px;
+  }
+
+  .news-showcase.is-mosaic .news-tile > div {
+    padding: 0;
+  }
+
+  .news-showcase.is-mosaic .news-tile img {
+    height: 76px;
+    border-radius: 6px;
   }
 
   .focus-chips {

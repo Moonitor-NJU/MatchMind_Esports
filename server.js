@@ -2161,7 +2161,7 @@ async function getNewsData({ refresh = false, tournament = null } = {}) {
 }
 
 async function fetchNewsItems(tournament = null) {
-  const sources = [...newsSources(), ...tournamentNewsSources(tournament)];
+  const sources = [...newsSources(tournament), ...tournamentNewsSources(tournament)];
   const batches = await Promise.allSettled(sources.map((source) => fetchNewsSource(source)));
   const items = batches.flatMap((batch) => batch.status === "fulfilled" ? batch.value : []);
   const deduped = [];
@@ -2172,7 +2172,7 @@ async function fetchNewsItems(tournament = null) {
     .filter((item) => isUsableNewsItem(item, tournament));
   const pool = tournament ? scored.filter((item) => item.relevance > 0) : scored;
   const officialFillers = tournament
-    ? scored.filter((item) => item.relevance <= 0 && isRecentOfficialDomesticNews(item))
+    ? scored.filter((item) => item.relevance <= 0 && isRecentOfficialDomesticNews(item, tournament))
     : [];
   for (const item of pool
     .sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament))) {
@@ -2193,53 +2193,88 @@ async function fetchNewsItems(tournament = null) {
   return rankNewsWithLlm(tournament, deduped);
 }
 
-function newsSources() {
+function newsSources(tournament = null) {
   const configured = csv(process.env.NEWS_FEEDS);
+  if (configured.length) return configured.map((url) => ({ url, source: sourceNameFromUrl(url), league: "custom" }));
+  const league = leagueKeyFromTournament(tournament);
   const tencentPages = [1, 2, 3].map((page) =>
     `https://apps.game.qq.com/wmp/v3.1/?p0=3&p1=searchNewsKeywordsList&page=${page}&pagesize=16&order=sIdxTime&r0=script&r1=NewsObj&type=iTarget&id=30,35,36&source=web_pc`
   );
-  const urls = configured.length ? configured : [
-    ...tencentPages,
-    "https://lpl.qq.com/es/news.shtml",
-    "https://lol.qq.com/main.shtml",
-    "https://www.scoregg.com/"
+  const sources = [
+    { url: "https://www.sheepesports.com/en/all/articles", source: "Sheep Esports", league: "global" },
+    { url: "https://lolesports.com/zh-CN/news", source: "LoL Esports 中文官网", league: "global" },
+    { url: "https://lolesports.com/en-US/news", source: "LoL Esports", league: "global" }
   ];
-  return urls.map((url) => ({ url, source: sourceNameFromUrl(url) }));
+  if (!tournament || league === "lpl") {
+    sources.unshift(
+      ...tencentPages.map((url) => ({ url, source: "LPL赛事官网", league: "lpl" })),
+      { url: "https://lpl.qq.com/es/news.shtml", source: "LPL赛事官网", league: "lpl" },
+      { url: "https://lol.qq.com/main.shtml", source: "英雄联盟官网", league: "lpl" },
+      { url: "https://www.scoregg.com/", source: "ScoreGG", league: "lpl" }
+    );
+  }
+  return sources;
 }
 
 function tournamentNewsSources(tournament) {
   if (!tournament) return [];
+  const league = leagueKeyFromTournament(tournament);
   return tournamentNewsQueries(tournament).flatMap((query) => [
     {
       url: `https://cn.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss&setlang=zh-cn&cc=CN`,
-      source: `Bing新闻：${query}`
+      source: `Bing新闻：${query}`,
+      league
     },
     {
       url: `https://cn.bing.com/search?q=${encodeURIComponent(query)}&format=rss&setlang=zh-cn&cc=CN`,
-      source: `Bing网页：${query}`
+      source: `Bing网页：${query}`,
+      league
     }
   ]);
 }
 
 function tournamentNewsQueries(tournament) {
-  const league = String(tournament.name || "").split(/[ ·:：\s]+/)[0] || "英雄联盟赛事";
+  const league = leagueLabelForNews(tournament);
   const stage = tournament.rules?.phase === "playoffs" ? "季后赛" : "常规赛";
   const domesticSites = [
-    "site:lpl.qq.com",
-    "site:lol.qq.com",
-    "site:scoregg.com",
     "site:zhihu.com",
+    "site:bilibili.com/read",
+    "site:baijiahao.baidu.com",
+    "site:hupu.com",
+    "site:weibo.com",
+    "site:qq.com",
     "site:163.com",
     "site:sohu.com",
     "site:sina.com.cn"
   ];
+  if (leagueKeyFromTournament(tournament) === "lpl") {
+    domesticSites.unshift("site:lpl.qq.com", "site:lol.qq.com", "site:scoregg.com");
+  } else {
+    domesticSites.unshift(
+      "site:lolesports.com",
+      "site:invenglobal.com",
+      "site:rft.gg",
+      "site:strafe.com",
+      "site:bo3.gg",
+      "site:esportnow.gg"
+    );
+  }
   const queries = new Set([
     `${league} ${stage} 英雄联盟 最新`,
     `${league} ${stage} 英雄联盟 热门`,
-    `${league} ${stage} 晋级形势`
+    `${league} ${stage} 晋级形势`,
+    `${league} ${stage} 电竞 自媒体`,
+    `${league} ${stage} 赛前 前瞻`
   ]);
   for (const site of domesticSites) {
     queries.add(`${league} ${stage} 英雄联盟 ${site}`);
+  }
+  for (const team of highInterestTeamsForNews(tournament).slice(0, 5)) {
+    queries.add(`${league} ${team} 英雄联盟 最新`);
+    queries.add(`${league} ${team} 赛前 前瞻 site:zhihu.com`);
+    queries.add(`${league} ${team} 英雄联盟 site:bilibili.com/read`);
+    queries.add(`${league} ${team} 英雄联盟 site:baijiahao.baidu.com`);
+    queries.add(`${league} ${team} 英雄联盟 site:hupu.com`);
   }
   const openMatches = (tournament.matches || [])
     .filter((match) => match.status !== "finished")
@@ -2250,9 +2285,48 @@ function tournamentNewsQueries(tournament) {
     queries.add(`${league} ${left} ${right} 预测 英雄联盟`);
     queries.add(`${left} ${right} ${stage} 英雄联盟`);
     queries.add(`${left} ${right} 英雄联盟 site:zhihu.com`);
-    queries.add(`${left} ${right} 英雄联盟 site:scoregg.com`);
+    queries.add(`${left} ${right} 英雄联盟 site:bilibili.com/read`);
+    queries.add(`${left} ${right} 英雄联盟 site:baijiahao.baidu.com`);
+    if (leagueKeyFromTournament(tournament) === "lpl") queries.add(`${left} ${right} 英雄联盟 site:scoregg.com`);
   }
-  return Array.from(queries).slice(0, 10);
+  return Array.from(queries).slice(0, 24);
+}
+
+function highInterestTeamsForNews(tournament = null) {
+  const teams = (tournament?.teams || []).map((team) => team.name);
+  const priorityByLeague = {
+    lck: ["T1", "GEN", "HLE", "DK", "KT"],
+    lec: ["G2", "KC", "FNC", "MKOI", "VIT"],
+    lcs: ["C9", "TL", "FLY", "100T"],
+    lcp: ["PSG", "CFO", "GAM"]
+  };
+  const priority = priorityByLeague[leagueKeyFromTournament(tournament)] || [];
+  return [
+    ...priority.filter((name) => teams.some((team) => teamMentionedInText(name, team))),
+    ...teams
+  ].filter(uniqueLabel);
+}
+
+function leagueKeyFromTournament(tournament = null) {
+  const text = `${tournament?.id || ""} ${tournament?.name || ""} ${tournament?.region || ""}`.toLowerCase();
+  if (/\blpl\b|china|中国/.test(text)) return "lpl";
+  if (/\blck\b|korea|韩国/.test(text)) return "lck";
+  if (/\blec\b|emea|europe|欧洲/.test(text)) return "lec";
+  if (/\blcs\b|north america|北美|美洲/.test(text)) return "lcs";
+  if (/\blcp\b|pacific|pcs|vcs|ljl|亚太/.test(text)) return "lcp";
+  return "global";
+}
+
+function leagueLabelForNews(tournament = null) {
+  const key = leagueKeyFromTournament(tournament);
+  const labels = {
+    lpl: "LPL",
+    lck: "LCK",
+    lec: "LEC",
+    lcs: "LCS",
+    lcp: "LCP"
+  };
+  return labels[key] || String(tournament?.name || "").split(/[ ·:：\s]+/)[0] || "英雄联盟赛事";
 }
 
 async function fetchNewsSource(source) {
@@ -2261,6 +2335,7 @@ async function fetchNewsSource(source) {
   const rssItems = tencentItems.length ? [] : parseRssItems(text, source);
   const items = rssItems.length ? rssItems : [
     ...tencentItems,
+    ...parseSheepEsportsLinks(text, source),
     ...parseLoLEsportsNews(text, source),
     ...parseGenericNewsLinks(text, source)
   ];
@@ -2269,6 +2344,8 @@ async function fetchNewsSource(source) {
     const image = item.image || await fetchArticleImage(item.url).catch(() => null);
     enriched.push({
       ...item,
+      league: item.league || source.league || "global",
+      sourceKind: item.sourceKind || source.sourceKind || "web",
       image: image || generatedNewsCoverUrl(item, null)
     });
   }
@@ -2294,12 +2371,60 @@ function parseTencentWmpNews(script, source) {
         description: stripTags(item.sDesc || item.sIntro || ""),
         image: resolveProtocolUrl(cover),
         source: "LPL赛事官网",
+        league: "lpl",
+        sourceKind: "official",
         publishedAt: parseNewsDate(item.sTargetIdxTime || item.sIdxTime)
       };
     }).filter((item) => item.title && item.url);
   } catch {
     return [];
   }
+}
+
+function parseSheepEsportsLinks(html, source) {
+  if (!/sheepesports\.com/i.test(source.url || "")) return [];
+  const seen = new Set();
+  const items = [];
+  const linkPattern = /href="(\/en\/all\/articles\/([^"\/]+)\/en)"/g;
+  for (const match of String(html || "").matchAll(linkPattern)) {
+    const path = match[1];
+    const slug = match[2];
+    if (!slug || seen.has(path)) continue;
+    seen.add(path);
+    const title = titleFromSlug(slug);
+    items.push({
+      title,
+      url: `https://www.sheepesports.com${path}`,
+      description: title,
+      image: "",
+      source: "Sheep Esports",
+      league: "global",
+      sourceKind: "editorial",
+      publishedAt: new Date().toISOString()
+    });
+    if (items.length >= 16) break;
+  }
+  return items;
+}
+
+function titleFromSlug(slug) {
+  return String(slug || "")
+    .split("-")
+    .filter(Boolean)
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (/^(a|an|the|to|with|from|for|and|or|of|in|on|after|before|without)$/.test(lower)) return lower;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(" ")
+    .replace(/\bmsi\b/ig, "MSI")
+    .replace(/\bt1\b/ig, "T1")
+    .replace(/\blck\b/ig, "LCK")
+    .replace(/\blec\b/ig, "LEC")
+    .replace(/\blpl\b/ig, "LPL")
+    .replace(/\bg2\b/ig, "G2")
+    .replace(/\bkc\b/ig, "KC")
+    .replace(/\bvit\b/ig, "VIT");
 }
 
 function parseLoLEsportsNews(html, source) {
@@ -2402,8 +2527,10 @@ function addQueryParam(url, key, value) {
 function newsRelevance(item, tournament, teamNames = null) {
   if (!tournament) return 0;
   const text = `${item.title || ""} ${item.description || ""}`.toLowerCase();
+  const tournamentLeague = leagueKeyFromTournament(tournament);
+  if (item.league && item.league !== "global" && item.league !== "custom" && item.league !== tournamentLeague) return 0;
   let score = 0;
-  const league = String(tournament.name || "").split(/[ ·:：\s]+/)[0].toLowerCase();
+  const league = leagueLabelForNews(tournament).toLowerCase();
   const leagueMatched = league && text.includes(league);
   let teamScore = 0;
   if (leagueMatched) score += 20;
@@ -2433,13 +2560,17 @@ function newsSortScore(item, tournament = null) {
 function domesticSourceScore(url, source = "") {
   const text = `${url || ""} ${source || ""}`.toLowerCase();
   if (/lpl\.qq\.com|lol\.qq\.com|scoregg\.com/.test(text)) return 28;
-  if (/zhihu\.com|163\.com|sohu\.com|sina\.com\.cn|qq\.com|bilibili\.com/.test(text)) return 20;
+  if (/zhihu\.com|bilibili\.com\/read|baijiahao\.baidu\.com|weibo\.com/.test(text)) return 26;
+  if (/163\.com|sohu\.com|sina\.com\.cn|qq\.com|bilibili\.com/.test(text)) return 20;
+  if (/invenglobal\.com|rft\.gg|strafe\.com|bo3\.gg|esportnow\.gg/.test(text)) return 18;
   if (/cn\.bing\.com|bing新闻|bing搜索/i.test(text)) return 10;
   if (/lolesports|dexerto|esports\.gg|op\.gg/.test(text)) return -30;
   return 0;
 }
 
-function isRecentOfficialDomesticNews(item) {
+function isRecentOfficialDomesticNews(item, tournament = null) {
+  const tournamentLeague = leagueKeyFromTournament(tournament);
+  if (item.league && item.league !== "global" && item.league !== "custom" && item.league !== tournamentLeague) return false;
   const text = `${item.url || ""} ${item.source || ""}`.toLowerCase();
   if (!/lpl赛事官网|lol\.qq\.com|lpl\.qq\.com|scoregg\.com|zhihu\.com|163\.com|sohu\.com|sina\.com\.cn/.test(text)) {
     return false;
@@ -2510,10 +2641,33 @@ async function rankNewsWithLlm(tournament, items) {
     for (const item of candidates) {
       if (!used.has(candidates.indexOf(item))) ranked.push(item);
     }
-    return ranked.slice(0, 8);
+    return diversifyNewsSources(ranked, 8);
   } catch (error) {
-    return candidates.sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament)).slice(0, 8);
+    return diversifyNewsSources(candidates.sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament)), 8);
   }
+}
+
+function diversifyNewsSources(items, limit = 8) {
+  const selected = [];
+  const deferred = [];
+  const counts = new Map();
+  const maxPerSource = Math.max(2, Math.ceil(limit / 2));
+  for (const item of items) {
+    const source = String(item.source || sourceNameFromUrl(item.url) || "unknown");
+    const count = counts.get(source) || 0;
+    if (count < maxPerSource) {
+      selected.push(item);
+      counts.set(source, count + 1);
+    } else {
+      deferred.push(item);
+    }
+    if (selected.length >= limit) return selected;
+  }
+  for (const item of deferred) {
+    selected.push(item);
+    if (selected.length >= limit) break;
+  }
+  return selected;
 }
 
 function isUsableNewsItem(item, tournament = null) {
@@ -2526,7 +2680,10 @@ function isUsableNewsItem(item, tournament = null) {
   if (/baike\.baidu\.com|wegame\.com|wx\.qq\.com|apifox\.com/i.test(url)) return false;
   if (/op\.gg|\/leagues\/|scoregg\.com\/match_pc|scoregg\.com\/tournament/i.test(url)) return false;
   if (/^https?:\/\/(?:www\.)?lpl\.qq\.com\/?$/i.test(url)) return false;
-  if (/schedule|standings|赛程、排名|排名和结果|赛事官网|直播尽在/i.test(title)) return false;
+  if (/schedule|standings|赛程、排名|排名和结果|赛程\|排名|积分|排行榜|赛事官网|直播尽在|联赛开始时间/i.test(title)) return false;
+  if (/法律英语|全国统一考试|证书|liquipedia|蜂鸟竞技|wiki/i.test(`${title} ${url}`)) return false;
+  if (/^(LCK|LEC|LCS|LCP)联赛\s*-\s*/i.test(title)) return false;
+  if (tournament && !newsMatchesTournamentScope(item, tournament)) return false;
   if (/^20\d{2}\s*LPL第[一二三四五六七八九十0-9]+赛段$/i.test(title.replace(/\s+/g, ""))) return false;
   if (/全明星周末/i.test(title) || /\/act\//i.test(url)) return false;
   const currentYear = new Date().getFullYear();
@@ -2534,6 +2691,16 @@ function isUsableNewsItem(item, tournament = null) {
   if (yearMatch && Number(yearMatch[1]) < currentYear) return false;
   if (tournament && String(item.source || "").includes("Bing搜索") && !searchResultLooksCurrent(item, tournament)) return false;
   return true;
+}
+
+function newsMatchesTournamentScope(item, tournament) {
+  const league = leagueKeyFromTournament(tournament);
+  const label = leagueLabelForNews(tournament).toLowerCase();
+  const text = `${item.title || ""} ${item.description || ""} ${item.url || ""}`.toLowerCase();
+  if (league === "global") return true;
+  if (item.league && item.league !== "global" && item.league !== "custom" && item.league !== league) return false;
+  if (text.includes(label)) return true;
+  return (tournament.teams || []).some((team) => teamMentionedInText(team.name, text));
 }
 
 function isVisualNewsFiller(item) {
@@ -2622,7 +2789,7 @@ function parseRssItem(itemXml, source) {
     url,
     description: stripTags(description).trim(),
     image,
-    source: source.source,
+    source: String(source.source || "").startsWith("Bing") ? sourceNameFromUrl(url) : source.source,
     publishedAt: parseNewsDate(xmlValue(itemXml, "pubDate") || xmlValue(itemXml, "dc:date"))
   };
 }

@@ -154,7 +154,7 @@ function resetAgentForTournament() {
 function renderNews() {
   if (!state.news.length) {
     els.newsStage.closest(".news-showcase")?.classList.add("is-empty");
-    els.newsStage.closest(".news-showcase")?.classList.remove("is-compact", "is-single");
+    els.newsStage.closest(".news-showcase")?.classList.remove("is-compact", "is-single", "is-mosaic");
     renderEmptyNews();
     restartNewsTimer(0);
     return;
@@ -164,6 +164,7 @@ function renderNews() {
   const showcase = els.newsStage.closest(".news-showcase");
   showcase?.classList.toggle("is-single", items.length === 1);
   showcase?.classList.toggle("is-compact", items.length > 1 && items.length < 4);
+  showcase?.classList.toggle("is-mosaic", items.length >= 4);
   showcase?.classList.remove("is-empty");
   const active = items[activeIndex];
   const activeAttrs = newsLinkAttrs(active.url);

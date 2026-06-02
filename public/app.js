@@ -6,6 +6,7 @@ const state = {
   news: [],
   newsIndex: 0,
   newsTimer: null,
+  newsPreloaded: new Set(),
   filter: "all",
   provider: "local",
   analysisRequestId: 0
@@ -93,6 +94,7 @@ async function loadNews(options = {}) {
   const data = await requestJson(`/api/news${params.toString() ? `?${params.toString()}` : ""}`);
   state.news = data.items || [];
   state.newsIndex = 0;
+  state.newsPreloaded.clear();
   renderNews();
 }
 
@@ -158,11 +160,12 @@ function renderNews() {
     return;
   }
   const items = state.news;
+  const activeIndex = state.newsIndex % items.length;
   const showcase = els.newsStage.closest(".news-showcase");
   showcase?.classList.toggle("is-single", items.length === 1);
   showcase?.classList.toggle("is-compact", items.length > 1 && items.length < 4);
   showcase?.classList.remove("is-empty");
-  const active = items[state.newsIndex % items.length];
+  const active = items[activeIndex];
   const activeAttrs = newsLinkAttrs(active.url);
   els.newsStage.innerHTML = `
     <a class="news-hero" href="${escapeHtml(active.url)}"${activeAttrs}>
@@ -177,13 +180,13 @@ function renderNews() {
         <button type="button" data-news-step="1" title="下一条">›</button>
       </div>
       <div class="news-dots">
-        ${items.slice(0, 8).map((_, index) => `<i class="${index === state.newsIndex % items.length ? "active" : ""}"></i>`).join("")}
+        ${items.slice(0, 8).map((_, index) => `<i class="${index === activeIndex ? "active" : ""}"></i>`).join("")}
       </div>
     </a>
   `;
-  const railItems = items.length === 1 ? [] : items.slice(0, 4);
-  els.newsRail.innerHTML = railItems.map((item, index) => `
-    <a class="news-tile ${index === state.newsIndex % items.length ? "active" : ""}" href="${escapeHtml(item.url)}"${newsLinkAttrs(item.url)} data-news-index="${index}">
+  const railItems = newsRailWindow(items, activeIndex);
+  els.newsRail.innerHTML = railItems.map(({ item, index }) => `
+    <a class="news-tile ${index === activeIndex ? "active" : ""}" href="${escapeHtml(item.url)}"${newsLinkAttrs(item.url)} data-news-index="${index}">
       <img src="${escapeHtml(item.image)}" alt="">
       <div>
         <strong>${escapeHtml(item.title)}</strong>
@@ -191,7 +194,28 @@ function renderNews() {
       </div>
     </a>
   `).join("");
+  preloadNewsImages(items, activeIndex);
   restartNewsTimer(items.length);
+}
+
+function newsRailWindow(items, activeIndex) {
+  if (items.length <= 1) return [];
+  if (items.length <= 4) return items.map((item, index) => ({ item, index }));
+  const indexes = [activeIndex];
+  for (let offset = 1; indexes.length < 4; offset += 1) {
+    indexes.push((activeIndex + offset) % items.length);
+  }
+  return indexes.map((index) => ({ item: items[index], index }));
+}
+
+function preloadNewsImages(items, activeIndex) {
+  for (let offset = 1; offset <= Math.min(3, items.length - 1); offset += 1) {
+    const item = items[(activeIndex + offset) % items.length];
+    if (!item?.image || state.newsPreloaded.has(item.image)) continue;
+    state.newsPreloaded.add(item.image);
+    const image = new Image();
+    image.src = item.image;
+  }
 }
 
 function renderEmptyNews() {
@@ -625,6 +649,16 @@ els.newsStage.addEventListener("click", (event) => {
   if (!total) return;
   const step = Number(button.dataset.newsStep || 0);
   state.newsIndex = (state.newsIndex + step + total) % total;
+  renderNews();
+});
+
+els.newsRail.addEventListener("click", (event) => {
+  const tile = event.target.closest("[data-news-index]");
+  if (!tile) return;
+  event.preventDefault();
+  const index = Number(tile.dataset.newsIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= state.news.length) return;
+  state.newsIndex = index;
   renderNews();
 });
 

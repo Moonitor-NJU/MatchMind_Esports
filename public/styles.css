@@ -302,6 +302,7 @@ button {
   border-radius: 8px;
   background: #101828;
   box-shadow: var(--shadow);
+  isolation: isolate;
 }
 
 .news-hero img,
@@ -310,6 +311,11 @@ button {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.news-hero img {
+  animation: newsFade 220ms ease-out;
+  transform: translateZ(0);
 }
 
 .news-hero::after {
@@ -411,6 +417,7 @@ button {
   background: #ffffff;
   text-decoration: none;
   box-shadow: var(--soft-shadow);
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
 .news-showcase.is-compact .news-tile {
@@ -426,6 +433,7 @@ button {
 .news-tile:hover {
   border-color: #9adbcf;
   background: #f0fdfa;
+  transform: translateY(-1px);
 }
 
 .news-tile img {
@@ -448,6 +456,17 @@ button {
   margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+@keyframes newsFade {
+  from {
+    opacity: 0.78;
+    transform: scale(1.012);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .focus-strip {

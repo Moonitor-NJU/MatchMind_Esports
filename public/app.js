@@ -151,11 +151,17 @@ function resetAgentForTournament() {
 
 function renderNews() {
   if (!state.news.length) {
+    els.newsStage.closest(".news-showcase")?.classList.add("is-empty");
+    els.newsStage.closest(".news-showcase")?.classList.remove("is-compact", "is-single");
     renderEmptyNews();
     restartNewsTimer(0);
     return;
   }
   const items = state.news;
+  const showcase = els.newsStage.closest(".news-showcase");
+  showcase?.classList.toggle("is-single", items.length === 1);
+  showcase?.classList.toggle("is-compact", items.length > 1 && items.length < 4);
+  showcase?.classList.remove("is-empty");
   const active = items[state.newsIndex % items.length];
   const activeAttrs = newsLinkAttrs(active.url);
   els.newsStage.innerHTML = `
@@ -175,7 +181,8 @@ function renderNews() {
       </div>
     </a>
   `;
-  els.newsRail.innerHTML = items.slice(0, 4).map((item, index) => `
+  const railItems = items.length === 1 ? [] : items.slice(0, 4);
+  els.newsRail.innerHTML = railItems.map((item, index) => `
     <a class="news-tile ${index === state.newsIndex % items.length ? "active" : ""}" href="${escapeHtml(item.url)}"${newsLinkAttrs(item.url)} data-news-index="${index}">
       <img src="${escapeHtml(item.image)}" alt="">
       <div>

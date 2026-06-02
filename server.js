@@ -2171,6 +2171,9 @@ async function fetchNewsItems(tournament = null) {
     .map((item) => ({ ...item, relevance: newsRelevance(item, tournament, tournamentNames) }))
     .filter((item) => isUsableNewsItem(item, tournament));
   const pool = tournament ? scored.filter((item) => item.relevance > 0) : scored;
+  const officialFillers = tournament
+    ? scored.filter((item) => item.relevance <= 0 && isRecentOfficialDomesticNews(item))
+    : [];
   for (const item of pool
     .sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament))) {
     const key = normalizeUrl(item.url);
@@ -2179,13 +2182,24 @@ async function fetchNewsItems(tournament = null) {
     deduped.push(item);
     if (deduped.length >= 12) break;
   }
+  for (const item of officialFillers
+    .sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament))) {
+    const key = normalizeUrl(item.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({ ...item, officialFiller: true });
+    if (deduped.length >= 12) break;
+  }
   return rankNewsWithLlm(tournament, deduped);
 }
 
 function newsSources() {
   const configured = csv(process.env.NEWS_FEEDS);
+  const tencentPages = [1, 2, 3].map((page) =>
+    `https://apps.game.qq.com/wmp/v3.1/?p0=3&p1=searchNewsKeywordsList&page=${page}&pagesize=16&order=sIdxTime&r0=script&r1=NewsObj&type=iTarget&id=30,35,36&source=web_pc`
+  );
   const urls = configured.length ? configured : [
-    "https://apps.game.qq.com/wmp/v3.1/?p0=3&p1=searchNewsKeywordsList&page=1&pagesize=16&order=sIdxTime&r0=script&r1=NewsObj&type=iTarget&id=30,35,36&source=web_pc",
+    ...tencentPages,
     "https://lpl.qq.com/es/news.shtml",
     "https://lol.qq.com/main.shtml",
     "https://www.scoregg.com/"
@@ -2405,13 +2419,15 @@ function newsRelevance(item, tournament, teamNames = null) {
 
 function newsSortScore(item, tournament = null) {
   const published = Date.parse(item.publishedAt || "");
-  const ageHours = Number.isFinite(published) ? Math.max(0, (Date.now() - published) / 3_600_000) : 72;
-  const recency = Math.max(0, 36 - Math.min(ageHours, 36));
+  const ageDays = Number.isFinite(published) ? Math.max(0, (Date.now() - published) / 86_400_000) : 30;
+  const recency = Math.max(0, 42 - Math.min(ageDays, 14) * 3);
   const domestic = domesticSourceScore(item.url, item.source);
   const visual = item.image && !String(item.image).includes("news-cover?") ? 8 : 0;
   const sourcePenalty = /lolesports|dexerto|esports\.gg|op\.gg/i.test(`${item.url} ${item.source}`) ? -40 : 0;
   const stageBonus = tournament?.rules?.phase === "playoffs" && /季后赛|淘汰|胜者组|败者组|门票|msi|爆冷|黑八/i.test(`${item.title} ${item.description}`) ? 12 : 0;
-  return (item.relevance || 0) + recency + domestic + visual + stageBonus + sourcePenalty;
+  const previewBonus = /焦点战预告|首发名单|对阵预告|赛前|前瞻/i.test(item.title || "") ? 14 : 0;
+  const oldAnnouncementPenalty = ageDays > 7 && /恭喜.*晋级|晋级.*淘汰赛/i.test(item.title || "") ? -18 : 0;
+  return (item.relevance || 0) + recency + domestic + visual + stageBonus + previewBonus + oldAnnouncementPenalty + sourcePenalty;
 }
 
 function domesticSourceScore(url, source = "") {
@@ -2421,6 +2437,18 @@ function domesticSourceScore(url, source = "") {
   if (/cn\.bing\.com|bing新闻|bing搜索/i.test(text)) return 10;
   if (/lolesports|dexerto|esports\.gg|op\.gg/.test(text)) return -30;
   return 0;
+}
+
+function isRecentOfficialDomesticNews(item) {
+  const text = `${item.url || ""} ${item.source || ""}`.toLowerCase();
+  if (!/lpl赛事官网|lol\.qq\.com|lpl\.qq\.com|scoregg\.com|zhihu\.com|163\.com|sohu\.com|sina\.com\.cn/.test(text)) {
+    return false;
+  }
+  const ageDays = Math.max(0, (Date.now() - Date.parse(item.publishedAt || new Date())) / 86_400_000);
+  if (ageDays > 60) return false;
+  const title = String(item.title || "");
+  if (/百科|赛程、排名|排行榜|直播|官网首页|官方网站/.test(title)) return false;
+  return /LPL|英雄联盟|淘汰赛|季后赛|首发|焦点|名单|公告|赛段/i.test(title);
 }
 
 async function rankNewsWithLlm(tournament, items) {
@@ -2450,6 +2478,7 @@ async function rankNewsWithLlm(tournament, items) {
         title: item.title,
         source: item.source,
         publishedAt: item.publishedAt,
+        ageDays: Math.round(Math.max(0, (Date.now() - Date.parse(item.publishedAt || new Date())) / 86_400_000) * 10) / 10,
         url: item.url,
         description: String(item.description || "").slice(0, 180),
         ruleScore: Math.round(newsSortScore(item, tournament))
@@ -2459,6 +2488,7 @@ async function rankNewsWithLlm(tournament, items) {
       "请从候选新闻中挑选最适合中国英雄联盟观众首页轮播的最新热门新闻。",
       "只允许选择候选列表里已有的 index，不要编造新新闻。",
       "优先级：1 最新；2 国内来源或中文社区；3 与当前赛事/队伍/季后赛/爆冷/MSI名额直接相关；4 标题像真实新闻而不是赛程页/直播页/分类页。",
+      "如果有最近 7 天内的赛前预告、首发名单、焦点战、赛果复盘，不要把更早的“恭喜晋级”公告排在它们前面。",
       "排除打不开概率高的纯直播页、赛程页、分类页、旧年份内容。",
       "输出 JSON：{\"order\":[0,2,1],\"notes\":{\"0\":\"一句选择理由\"}}，order 最多 8 个。"
     ].join("\n");

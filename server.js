@@ -1335,15 +1335,20 @@ function audienceHeadline(match, leftProfile, rightProfile, leftBuzz, rightBuzz,
 
 function audienceBody(match, leftProfile, rightProfile, leftBuzz, rightBuzz, rivalry) {
   const buzzLine = buzzSummary(match.left, leftBuzz, match.right, rightBuzz);
-  const identity = `${match.left} 带着「${displayAudienceTags(leftProfile).join("、")}」标签，${match.right} 的看点是「${displayAudienceTags(rightProfile).join("、")}」。`;
+  const leftTags = displayAudienceTags(leftProfile);
+  const rightTags = displayAudienceTags(rightProfile);
+  const identity = [
+    leftTags.length ? `${match.left} 这边的关键词是 ${leftTags.join("、")}` : "",
+    rightTags.length ? `${match.right} 更像是 ${rightTags.join("、")} 的剧本` : ""
+  ].filter(Boolean).join("；");
   const stakes = match.bracket === "败者组"
-    ? (match.outcome?.summary || "这是败者组高压 BO，具体淘汰/晋级落点以当前规则和官方签表为准。")
+    ? (match.outcome?.summary || "败者组没有太多试错空间，这场更像是决定队伍能不能继续留在牌桌上的 BO。")
     : match.bracket === "胜者组"
-      ? (match.outcome?.summary || "这是胜者组路径战，胜负会改变后续签表位置。")
+      ? (match.outcome?.summary || "胜者组的价值在于少打一轮硬仗，谁赢谁就能把压力甩给对手。")
       : match.bracket === "淘汰赛"
-        ? "这类资格赛不应按 0-0 积分榜理解，真正看点是谁能先在 BO5 路径里拿到晋级主动权。"
+        ? "这类资格赛不能按积分榜理解，真正看点是谁能在 BO5 里先把晋级路线打清楚。"
         : "这场会影响排名主动权，适合结合赛前讨论和赛后风向观察。";
-  return [identity, rivalry ? `叙事上属于${rivalry}。` : "", buzzLine, stakes].filter(Boolean).join("");
+  return [identity ? `${identity}。` : "", rivalry ? `叙事上属于${rivalry}。` : "", buzzLine, stakes].filter(Boolean).join("");
 }
 
 function displayAudienceTags(profile) {
@@ -1364,9 +1369,9 @@ function hasAudienceTag(profile, pattern) {
 
 function buzzSummary(left, leftBuzz, right, rightBuzz) {
   const total = leftBuzz.count + rightBuzz.count;
-  if (!total) return "热度主要来自粉丝盘、队伍标签和淘汰赛压力，而不是单纯的积分变化。";
+  if (!total) return "这场的热度更多来自队伍本身的关注度和淘汰赛压力，而不是冷冰冰的积分变化。";
   const sample = [...leftBuzz.headlines, ...rightBuzz.headlines][0];
-  return `近期新闻/文章标题中 ${left}、${right} 合计命中约 ${total} 次${sample ? `，代表话题如「${sample}」` : ""}。`;
+  return `最近新闻和社区标题里，${left}、${right} 一共出现约 ${total} 次${sample ? `，比较有代表性的话题是「${sample}」` : ""}。`;
 }
 
 function audienceChips(match, leftProfile, rightProfile, leftBuzz, rightBuzz) {
@@ -1881,6 +1886,8 @@ async function enhanceAnalysisWithLlm(provider, tournament, analysis, newsItems 
     "JSON 格式：{\"summary\":\"两到四句中文摘要\",\"focusStories\":[{\"tone\":\"hot|watch\",\"headline\":\"一句焦点标题\",\"body\":\"两到三句，必须点明哪些比赛/赛果为什么重要\",\"chips\":[\"标签1\",\"标签2\"]}]}。",
     "优先识别 audienceSignals、rules.stakes、phaseView.cards[].stake、关键晋级权益、国际赛名额、胜败者组路径、还没打的直接影响比赛。",
     "焦点要兼顾观众体验：队伍名气、流量队、近期新闻标题讨论、爆冷/复仇/生死战叙事都要纳入，但不能脱离给定数据。",
+    "写法要像电竞赛前专栏，不要像系统模板。禁止出现“带着标签”“主动权战标签”“按项目赛制配置”“官方签表尚未给出”“本地规则引擎”等内部工程话术。",
+    "不要只复述标签；必须直接说人话：这场为什么值得看，谁压力更大，赢了/输了对观众理解赛程有什么影响。",
     "如果 contextGuardrail 标明是季后赛，绝对不要用 0-0、官方排名、小分和晋级线胜场差做结论；这些字段在季后赛上下文中应视为无效。",
     "可使用 webContext.relatedNews 作为网页舆论参考；没有相关新闻时不要声称模型已全网搜索。",
     "不得编造结构化数据中不存在的赛果；如果规则只来自项目配置，请用“按当前规则配置/以官方公告为准”保持边界。"
@@ -2699,8 +2706,27 @@ function newsMatchesTournamentScope(item, tournament) {
   const text = `${item.title || ""} ${item.description || ""} ${item.url || ""}`.toLowerCase();
   if (league === "global") return true;
   if (item.league && item.league !== "global" && item.league !== "custom" && item.league !== league) return false;
-  if (text.includes(label)) return true;
-  return (tournament.teams || []).some((team) => teamMentionedInText(team.name, text));
+  const teamHit = (tournament.teams || []).some((team) => teamMentionedInText(team.name, text));
+  if (teamHit) return true;
+  if (!text.includes(label)) return false;
+  return hasEsportsNewsContext(text, league);
+}
+
+function hasEsportsNewsContext(text, league = "") {
+  const value = String(text || "").toLowerCase();
+  const esportsTerms = [
+    "league of legends", "英雄联盟", "lol", "riot", "esports", "电竞",
+    "playoffs", "regular season", "road to msi", "msi", "worlds",
+    "季后赛", "常规赛", "胜者组", "败者组", "淘汰赛", "赛段", "首发", "焦点战"
+  ];
+  if (esportsTerms.some((term) => value.includes(term))) return true;
+  const leagueTeams = {
+    lck: ["t1", "faker", "gen.g", "geng", "hle", "hanwha", "dk", "dplus", "kt rolster"],
+    lec: ["g2", "fnatic", "fnc", "karmine", "kc", "mkoi", "vitality", "lec playoffs"],
+    lcs: ["cloud9", "c9", "team liquid", "flyquest", "100 thieves", "lcs playoffs"],
+    lcp: ["psg talon", "ctbc", "cfo", "gam esports", "lcp playoffs", "pacific"]
+  };
+  return (leagueTeams[league] || []).some((term) => value.includes(term));
 }
 
 function isVisualNewsFiller(item) {

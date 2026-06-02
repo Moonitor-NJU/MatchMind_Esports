@@ -8,7 +8,7 @@ const state = {
   newsTimer: null,
   newsPreloaded: new Set(),
   filter: "all",
-  provider: "local",
+  provider: "deepseek",
   analysisRequestId: 0
 };
 

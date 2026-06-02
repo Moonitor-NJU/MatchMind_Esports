@@ -150,7 +150,12 @@ function resetAgentForTournament() {
 }
 
 function renderNews() {
-  const items = state.news.length ? state.news : fallbackNewsItems();
+  if (!state.news.length) {
+    renderEmptyNews();
+    restartNewsTimer(0);
+    return;
+  }
+  const items = state.news;
   const active = items[state.newsIndex % items.length];
   const activeAttrs = newsLinkAttrs(active.url);
   els.newsStage.innerHTML = `
@@ -182,6 +187,20 @@ function renderNews() {
   restartNewsTimer(items.length);
 }
 
+function renderEmptyNews() {
+  els.newsStage.innerHTML = `
+    <div class="news-hero news-empty">
+      <img src="/api/news-cover?title=${encodeURIComponent("暂无可展示国内新闻")}&source=MatchMind&league=${encodeURIComponent(state.tournament?.id || "default")}" alt="" loading="lazy">
+      <div class="news-overlay">
+        <p class="eyebrow">Trending</p>
+        <h3>暂无可展示国内新闻</h3>
+        <span>请稍后刷新，或检查网络与新闻源配置</span>
+      </div>
+    </div>
+  `;
+  els.newsRail.innerHTML = "";
+}
+
 function newsLinkAttrs(url) {
   return String(url || "").startsWith("#") ? "" : ` target="_blank" rel="noopener noreferrer"`;
 }
@@ -193,17 +212,6 @@ function restartNewsTimer(total) {
     state.newsIndex = (state.newsIndex + 1) % total;
     renderNews();
   }, 6000);
-}
-
-function fallbackNewsItems() {
-  const title = state.analysis?.focusStories?.[0]?.headline || "实时赛事焦点正在更新";
-  return [{
-    title,
-    source: "MatchMind",
-    url: "#analysis",
-    publishedAt: new Date().toISOString(),
-    image: "/news-placeholder.svg"
-  }];
 }
 
 function renderHeader() {
@@ -606,7 +614,8 @@ els.newsStage.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   event.preventDefault();
-  const total = state.news.length || fallbackNewsItems().length;
+  const total = state.news.length;
+  if (!total) return;
   const step = Number(button.dataset.newsStep || 0);
   state.newsIndex = (state.newsIndex + step + total) % total;
   renderNews();

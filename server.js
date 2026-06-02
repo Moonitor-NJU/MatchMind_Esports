@@ -2136,13 +2136,11 @@ async function getNewsData({ refresh = false, tournament = null } = {}) {
   if (!refresh && cached && now - cached.cachedAt < NEWS_CACHE_TTL_MS) return cached.data;
   try {
     const items = await fetchNewsItems(tournament);
-    const generatedOnly = items.length && items.every((item) => String(item.source || "").startsWith("MatchMind"));
     const data = {
-      items: items.length ? items : fallbackNews(tournament),
+      items,
       meta: {
-        source: items.length
-          ? (generatedOnly ? "本地赛区焦点" : (tournament ? "中文网页/RSS/新闻搜索" : "RSS/网页新闻源"))
-          : "本地赛事焦点",
+        source: items.length ? "国内网页/RSS/新闻搜索" : "国内新闻源暂无可展示结果",
+        warning: items.length ? "" : "暂未抓取到可展示的国内赛事新闻，请稍后刷新。",
         updatedAt: new Date().toISOString()
       }
     };
@@ -2150,9 +2148,9 @@ async function getNewsData({ refresh = false, tournament = null } = {}) {
     return data;
   } catch (error) {
     const data = {
-      items: fallbackNews(tournament),
+      items: [],
       meta: {
-        source: "本地赛事焦点",
+        source: "国内新闻源暂不可用",
         warning: `新闻源暂不可用：${error.message}`,
         updatedAt: new Date().toISOString()
       }
@@ -2173,46 +2171,24 @@ async function fetchNewsItems(tournament = null) {
     .map((item) => ({ ...item, relevance: newsRelevance(item, tournament, tournamentNames) }))
     .filter((item) => isUsableNewsItem(item, tournament));
   const pool = tournament ? scored.filter((item) => item.relevance > 0) : scored;
-  const visualFillers = tournament
-    ? scored.filter((item) => item.relevance <= 0 && isVisualNewsFiller(item))
-    : [];
   for (const item of pool
-    .sort((a, b) => b.relevance - a.relevance || new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
+    .sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament))) {
     const key = normalizeUrl(item.url);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);
-    if (deduped.length >= 8) break;
+    if (deduped.length >= 12) break;
   }
-  if (tournament && deduped.length < 4) {
-    for (const item of visualFillers.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))) {
-      const key = normalizeUrl(item.url);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      deduped.push({ ...item, visualFiller: true });
-      if (deduped.length >= 4) break;
-    }
-  }
-  if (tournament && deduped.length < 4) {
-    for (const item of fallbackNews(tournament)) {
-      const key = normalizeUrl(item.url) || `${item.source}:${item.title}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(item);
-      if (deduped.length >= 8) break;
-    }
-  }
-  return deduped;
+  return rankNewsWithLlm(tournament, deduped);
 }
 
 function newsSources() {
   const configured = csv(process.env.NEWS_FEEDS);
   const urls = configured.length ? configured : [
-    "https://lolesports.com/zh-CN/news",
+    "https://apps.game.qq.com/wmp/v3.1/?p0=3&p1=searchNewsKeywordsList&page=1&pagesize=16&order=sIdxTime&r0=script&r1=NewsObj&type=iTarget&id=30,35,36&source=web_pc",
     "https://lpl.qq.com/es/news.shtml",
-    "https://lolesports.com/en-US/news",
-    "https://www.dexerto.com/league-of-legends/feed/",
-    "https://esports.gg/news/league-of-legends/feed/"
+    "https://lol.qq.com/main.shtml",
+    "https://www.scoregg.com/"
   ];
   return urls.map((url) => ({ url, source: sourceNameFromUrl(url) }));
 }
@@ -2225,8 +2201,8 @@ function tournamentNewsSources(tournament) {
       source: `Bing新闻：${query}`
     },
     {
-      url: `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=zh-cn&cc=CN`,
-      source: `Bing搜索：${query}`
+      url: `https://cn.bing.com/search?q=${encodeURIComponent(query)}&format=rss&setlang=zh-cn&cc=CN`,
+      source: `Bing网页：${query}`
     }
   ]);
 }
@@ -2234,12 +2210,23 @@ function tournamentNewsSources(tournament) {
 function tournamentNewsQueries(tournament) {
   const league = String(tournament.name || "").split(/[ ·:：\s]+/)[0] || "英雄联盟赛事";
   const stage = tournament.rules?.phase === "playoffs" ? "季后赛" : "常规赛";
+  const domesticSites = [
+    "site:lpl.qq.com",
+    "site:lol.qq.com",
+    "site:scoregg.com",
+    "site:zhihu.com",
+    "site:163.com",
+    "site:sohu.com",
+    "site:sina.com.cn"
+  ];
   const queries = new Set([
     `${league} ${stage} 英雄联盟 最新`,
-    `${league} ${stage} 晋级形势`,
-    `${league} ${stage} site:scoregg.com`,
-    `${league} ${stage} site:lol.qq.com`
+    `${league} ${stage} 英雄联盟 热门`,
+    `${league} ${stage} 晋级形势`
   ]);
+  for (const site of domesticSites) {
+    queries.add(`${league} ${stage} 英雄联盟 ${site}`);
+  }
   const openMatches = (tournament.matches || [])
     .filter((match) => match.status !== "finished")
     .slice(0, 3);
@@ -2248,14 +2235,18 @@ function tournamentNewsQueries(tournament) {
     const right = teamName(tournament, match.teams[1]);
     queries.add(`${league} ${left} ${right} 预测 英雄联盟`);
     queries.add(`${left} ${right} ${stage} 英雄联盟`);
+    queries.add(`${left} ${right} 英雄联盟 site:zhihu.com`);
+    queries.add(`${left} ${right} 英雄联盟 site:scoregg.com`);
   }
-  return Array.from(queries).slice(0, 5);
+  return Array.from(queries).slice(0, 10);
 }
 
 async function fetchNewsSource(source) {
   const text = await fetchText(source.url);
-  const rssItems = parseRssItems(text, source);
+  const tencentItems = parseTencentWmpNews(text, source);
+  const rssItems = tencentItems.length ? [] : parseRssItems(text, source);
   const items = rssItems.length ? rssItems : [
+    ...tencentItems,
     ...parseLoLEsportsNews(text, source),
     ...parseGenericNewsLinks(text, source)
   ];
@@ -2268,6 +2259,33 @@ async function fetchNewsSource(source) {
     });
   }
   return enriched;
+}
+
+function parseTencentWmpNews(script, source) {
+  const match = String(script || "").match(/var\s+NewsObj\s*=\s*(\{[\s\S]*?\});?\s*$/);
+  if (!match) return [];
+  try {
+    const json = JSON.parse(match[1]);
+    const result = Array.isArray(json?.msg?.result) ? json.msg.result : [];
+    return result.map((item) => {
+      const redirect = String(item.sRedirectURL || "").trim();
+      const docid = item.iDocID || item.iNewsId;
+      const url = redirect
+        ? addQueryParam(resolveUrl(redirect, "https://lpl.qq.com/"), "docid", docid)
+        : `https://lol.qq.com/news/detail.shtml?type=1&docid=${encodeURIComponent(docid || "")}`;
+      const cover = item.sIMG || item.sCoverList?.find((coverItem) => coverItem?.url)?.url || "";
+      return {
+        title: normalizeNewsTitle(item.sTitle),
+        url,
+        description: stripTags(item.sDesc || item.sIntro || ""),
+        image: resolveProtocolUrl(cover),
+        source: "LPL赛事官网",
+        publishedAt: parseNewsDate(item.sTargetIdxTime || item.sIdxTime)
+      };
+    }).filter((item) => item.title && item.url);
+  } catch {
+    return [];
+  }
 }
 
 function parseLoLEsportsNews(html, source) {
@@ -2349,6 +2367,24 @@ function resolveUrl(href, baseUrl) {
   }
 }
 
+function resolveProtocolUrl(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (value.startsWith("//")) return `https:${value}`;
+  return resolveUrl(value, "https://lpl.qq.com/");
+}
+
+function addQueryParam(url, key, value) {
+  if (!url || value == null || value === "") return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has(key)) parsed.searchParams.set(key, value);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 function newsRelevance(item, tournament, teamNames = null) {
   if (!tournament) return 0;
   const text = `${item.title || ""} ${item.description || ""}`.toLowerCase();
@@ -2367,6 +2403,89 @@ function newsRelevance(item, tournament, teamNames = null) {
   return score;
 }
 
+function newsSortScore(item, tournament = null) {
+  const published = Date.parse(item.publishedAt || "");
+  const ageHours = Number.isFinite(published) ? Math.max(0, (Date.now() - published) / 3_600_000) : 72;
+  const recency = Math.max(0, 36 - Math.min(ageHours, 36));
+  const domestic = domesticSourceScore(item.url, item.source);
+  const visual = item.image && !String(item.image).includes("news-cover?") ? 8 : 0;
+  const sourcePenalty = /lolesports|dexerto|esports\.gg|op\.gg/i.test(`${item.url} ${item.source}`) ? -40 : 0;
+  const stageBonus = tournament?.rules?.phase === "playoffs" && /季后赛|淘汰|胜者组|败者组|门票|msi|爆冷|黑八/i.test(`${item.title} ${item.description}`) ? 12 : 0;
+  return (item.relevance || 0) + recency + domestic + visual + stageBonus + sourcePenalty;
+}
+
+function domesticSourceScore(url, source = "") {
+  const text = `${url || ""} ${source || ""}`.toLowerCase();
+  if (/lpl\.qq\.com|lol\.qq\.com|scoregg\.com/.test(text)) return 28;
+  if (/zhihu\.com|163\.com|sohu\.com|sina\.com\.cn|qq\.com|bilibili\.com/.test(text)) return 20;
+  if (/cn\.bing\.com|bing新闻|bing搜索/i.test(text)) return 10;
+  if (/lolesports|dexerto|esports\.gg|op\.gg/.test(text)) return -30;
+  return 0;
+}
+
+async function rankNewsWithLlm(tournament, items) {
+  const candidates = items.slice(0, 12);
+  if (!candidates.length) return [];
+  const provider = process.env.NEWS_RANK_PROVIDER || process.env.DEFAULT_LLM_PROVIDER || "deepseek";
+  try {
+    const context = JSON.stringify({
+      tournament: tournament ? {
+        id: tournament.id,
+        name: tournament.name,
+        stage: tournament.stage,
+        phase: tournament.rules?.phase,
+        teams: (tournament.teams || []).map((team) => team.name),
+        upcomingMatches: (tournament.matches || [])
+          .filter((match) => match.status !== "finished")
+          .slice(0, 6)
+          .map((match) => ({
+            startsAt: match.startsAt,
+            left: teamName(tournament, match.teams[0]),
+            right: teamName(tournament, match.teams[1]),
+            bestOf: match.bestOf
+          }))
+      } : null,
+      candidates: candidates.map((item, index) => ({
+        index,
+        title: item.title,
+        source: item.source,
+        publishedAt: item.publishedAt,
+        url: item.url,
+        description: String(item.description || "").slice(0, 180),
+        ruleScore: Math.round(newsSortScore(item, tournament))
+      }))
+    });
+    const prompt = [
+      "请从候选新闻中挑选最适合中国英雄联盟观众首页轮播的最新热门新闻。",
+      "只允许选择候选列表里已有的 index，不要编造新新闻。",
+      "优先级：1 最新；2 国内来源或中文社区；3 与当前赛事/队伍/季后赛/爆冷/MSI名额直接相关；4 标题像真实新闻而不是赛程页/直播页/分类页。",
+      "排除打不开概率高的纯直播页、赛程页、分类页、旧年份内容。",
+      "输出 JSON：{\"order\":[0,2,1],\"notes\":{\"0\":\"一句选择理由\"}}，order 最多 8 个。"
+    ].join("\n");
+    const llm = await callLlm(provider, prompt, context);
+    const parsed = parseJsonFromLlm(llm);
+    const order = Array.isArray(parsed?.order) ? parsed.order : [];
+    const ranked = [];
+    const used = new Set();
+    for (const value of order) {
+      const index = Number(value);
+      if (!Number.isInteger(index) || index < 0 || index >= candidates.length || used.has(index)) continue;
+      used.add(index);
+      ranked.push({
+        ...candidates[index],
+        aiRanked: true,
+        aiReason: parsed?.notes?.[String(index)] || parsed?.notes?.[index] || ""
+      });
+    }
+    for (const item of candidates) {
+      if (!used.has(candidates.indexOf(item))) ranked.push(item);
+    }
+    return ranked.slice(0, 8);
+  } catch (error) {
+    return candidates.sort((a, b) => newsSortScore(b, tournament) - newsSortScore(a, tournament)).slice(0, 8);
+  }
+}
+
 function isUsableNewsItem(item, tournament = null) {
   const title = normalizeNewsTitle(item.title);
   if (!title || /[�]{1,}|\?{3,}/.test(title)) return false;
@@ -2374,7 +2493,11 @@ function isUsableNewsItem(item, tournament = null) {
   if (!url) return false;
   if (/powerpoint|microsoft365|office\.com|bing\.com\/search/i.test(`${title} ${url}`)) return false;
   if (/live\.bilibili\.com|huya\.com\/search|douyu\.com\/search|bendibao\.com/i.test(url)) return false;
-  if (/op\.gg|\/leagues\//i.test(url) || /schedule|standings|赛程、排名|排名和结果/i.test(title)) return false;
+  if (/baike\.baidu\.com|wegame\.com|wx\.qq\.com|apifox\.com/i.test(url)) return false;
+  if (/op\.gg|\/leagues\/|scoregg\.com\/match_pc|scoregg\.com\/tournament/i.test(url)) return false;
+  if (/^https?:\/\/(?:www\.)?lpl\.qq\.com\/?$/i.test(url)) return false;
+  if (/schedule|standings|赛程、排名|排名和结果|赛事官网|直播尽在/i.test(title)) return false;
+  if (/^20\d{2}\s*LPL第[一二三四五六七八九十0-9]+赛段$/i.test(title.replace(/\s+/g, ""))) return false;
   if (/全明星周末/i.test(title) || /\/act\//i.test(url)) return false;
   const currentYear = new Date().getFullYear();
   const yearMatch = title.match(/\b(20\d{2})\b/);
@@ -2545,34 +2668,6 @@ function sourceNameFromUrl(url) {
   } catch {
     return "赛事新闻";
   }
-}
-
-function fallbackNews(tournament = null) {
-  if (tournament) {
-    const analysis = localAnalysis(tournament);
-    const items = (analysis.keyMatches || []).slice(0, 4).map((match) => ({
-      title: `${match.left} vs ${match.right}：${match.tag}`,
-      description: match.reason,
-      source: "MatchMind 赛区焦点",
-      url: "#analysis",
-      image: generatedNewsCoverUrl({
-        title: `${match.left} vs ${match.right}`,
-        source: tournament.name,
-        description: match.tag
-      }, tournament),
-      publishedAt: match.startsAt || new Date().toISOString()
-    }));
-    if (items.length) return items;
-  }
-  return [
-    {
-      title: "实时赛事焦点正在更新",
-      source: "MatchMind",
-      url: "#analysis",
-      image: generatedNewsCoverUrl({ title: "赛事焦点正在更新", source: "MatchMind" }, tournament),
-      publishedAt: new Date().toISOString()
-    }
-  ];
 }
 
 async function handleApi(req, res) {
@@ -2807,6 +2902,15 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     sendJson(res, 500, { error: error.message });
   }
+});
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use. Close the existing server or start with another port:`);
+    console.error(`  $env:PORT=3001; node server.js`);
+    process.exit(1);
+  }
+  throw error;
 });
 
 server.listen(PORT, () => {

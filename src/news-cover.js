@@ -11,12 +11,20 @@ function buildNewsCoverSvg({ title, source, league }) {
   const label = leagueLabelFromText(league || title || source);
   const palette = COVER_PALETTES[label] || COVER_PALETTES.default;
   const [base, accent, glow] = palette;
+  const isReport = /战报|赛报|零封|晋级|挺进|击败|战胜|横扫|让二追三|玩加|wanplus/i.test(`${title || ""} ${source || ""}`);
   const lines = svgTitleLines(title || "赛事焦点");
-  const safeSource = escapeSvgText(source || "MatchMind");
+  const safeSource = escapeSvgText(isReport ? `${source || "MatchMind"} · REPORT` : source || "MatchMind");
   const safeLeague = escapeSvgText(label === "default" ? "MATCHMIND" : label);
   const textLines = lines.map((line, index) =>
     `<text x="44" y="${205 + index * 54}" class="title">${escapeSvgText(line)}</text>`
   ).join("");
+  const reportLayer = isReport ? `
+  <rect x="44" y="148" width="172" height="34" rx="17" fill="${glow}" opacity=".95"/>
+  <text x="66" y="172" class="badge">MATCH REPORT</text>
+  <text x="608" y="382" class="watermark">${safeLeague}</text>
+  <path d="M618 92 L906 92 L852 330 L564 330 Z" fill="#fff" opacity=".08"/>
+  <path d="M660 130 L850 130 L818 286 L628 286 Z" fill="none" stroke="#fff" stroke-opacity=".24" stroke-width="4"/>
+  ` : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-label="${escapeSvgText(title || "赛事焦点")}">
   <defs>
@@ -38,6 +46,8 @@ function buildNewsCoverSvg({ title, source, league }) {
       .league { font: 800 18px Arial, "Microsoft YaHei", sans-serif; fill: ${glow}; }
       .title { font: 900 48px Arial, "Microsoft YaHei", sans-serif; fill: #ffffff; paint-order: stroke; stroke: rgba(0,0,0,.28); stroke-width: 5px; stroke-linejoin: round; }
       .meta { font: 700 24px Arial, "Microsoft YaHei", sans-serif; fill: rgba(255,255,255,.78); }
+      .badge { font: 900 16px Arial, "Microsoft YaHei", sans-serif; fill: #07111f; letter-spacing: 1px; }
+      .watermark { font: 900 132px Arial, "Microsoft YaHei", sans-serif; fill: #fff; opacity: .1; letter-spacing: 2px; }
     </style>
   </defs>
   <rect width="960" height="540" fill="url(#bg)"/>
@@ -46,6 +56,7 @@ function buildNewsCoverSvg({ title, source, league }) {
   <circle cx="820" cy="92" r="144" fill="#fff" opacity=".09"/>
   <circle cx="58" cy="468" r="230" fill="#020617" opacity=".26"/>
   <path d="M0 384 C178 322 300 390 475 333 C640 278 756 292 960 229 L960 540 L0 540 Z" fill="#020617" opacity=".33"/>
+  ${reportLayer}
   <text x="44" y="82" class="source">MATCHMIND ESPORTS</text>
   <text x="44" y="128" class="league">${safeLeague} · TRENDING</text>
   ${textLines}

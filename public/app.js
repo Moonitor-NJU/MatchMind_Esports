@@ -3,23 +3,27 @@ const state = {
   tournament: null,
   analysis: null,
   meta: null,
+  newsMeta: null,
   news: [],
   newsIndex: 0,
   newsTimer: null,
   newsPreloaded: new Set(),
   filter: "all",
   provider: "deepseek",
-  analysisRequestId: 0
+  analysisRequestId: 0,
+  aiUpdating: false
 };
 
 const els = {
   tournamentSelect: document.querySelector("#tournamentSelect"),
   providerSelect: document.querySelector("#providerSelect"),
   sourceText: document.querySelector("#sourceText"),
+  sourceDiagnostics: document.querySelector("#sourceDiagnostics"),
   gameLabel: document.querySelector("#gameLabel"),
   tournamentTitle: document.querySelector("#tournamentTitle"),
   refreshButton: document.querySelector("#refreshButton"),
   heroSummary: document.querySelector("#heroSummary"),
+  agentStatus: document.querySelector("#agentStatus"),
   liveCount: document.querySelector("#liveCount"),
   keyCount: document.querySelector("#keyCount"),
   advanceSlots: document.querySelector("#advanceSlots"),
@@ -69,8 +73,9 @@ function teamById(id) {
 
 async function requestJson(url, options) {
   const response = await fetch(url, options);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+  return data;
 }
 
 async function loadTournaments(options = {}) {
@@ -81,29 +86,81 @@ async function loadTournaments(options = {}) {
   els.tournamentSelect.innerHTML = state.tournaments
     .map((item) => `<option value="${item.id}">${item.name}</option>`)
     .join("");
-  const preferredId = state.tournaments.some((item) => item.id === state.tournament?.id)
-    ? state.tournament.id
-    : state.tournaments[0]?.id;
+  const preferredId = preferredTournamentId();
   await loadAnalysis(preferredId, options);
 }
 
+function preferredTournamentId() {
+  if (state.tournaments.some((item) => item.id === state.tournament?.id && !isDemoTournament(item))) {
+    return state.tournament.id;
+  }
+  const priority = [
+    /\bLPL\b/i,
+    /\bLCK\b/i,
+    /\bLEC\b/i,
+    /\bLCS\b/i,
+    /\bLCP\b/i
+  ];
+  for (const pattern of priority) {
+    const match = state.tournaments.find((item) => pattern.test(`${item.name || ""} ${item.stage || ""}`) && !isDemoTournament(item));
+    if (match) return match.id;
+  }
+  return state.tournaments.find((item) => !isDemoTournament(item))?.id || state.tournaments[0]?.id;
+}
+
+function isDemoTournament(tournament) {
+  return /演示组|demo/i.test(`${tournament?.id || ""} ${tournament?.name || ""} ${tournament?.source || ""}`);
+}
+
 async function loadNews(options = {}) {
+  setAgentStep("news", "active");
   const params = new URLSearchParams();
   if (options.refresh) params.set("refresh", "1");
-  if (options.tournamentId || state.tournament?.id) params.set("tournament", options.tournamentId || state.tournament.id);
   const data = await requestJson(`/api/news${params.toString() ? `?${params.toString()}` : ""}`);
   state.news = data.items || [];
+  state.newsMeta = data.meta || null;
   state.newsIndex = 0;
   state.newsPreloaded.clear();
   renderNews();
+  renderHeader();
+  setAgentStep("news", state.news.length ? "done" : "warn");
 }
 
 async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
   const requestId = ++state.analysisRequestId;
   const previousTournamentId = state.tournament?.id;
   const switchingTournament = previousTournamentId && tournamentId && previousTournamentId !== tournamentId;
-  if (switchingTournament) clearTournamentPanels();
-  els.heroSummary.textContent = "正在重新计算赛程影响和晋级形势...";
+  if (switchingTournament) {
+    clearTournamentPanels();
+  }
+  els.heroSummary.textContent = "正在读取赛程...";
+  setAgentStep("schedule", "active");
+  const previewParams = new URLSearchParams({
+    tournament: tournamentId,
+    provider: "local",
+    fast: "1"
+  });
+  const preview = await requestJson(`/api/analyze?${previewParams.toString()}`);
+  if (requestId !== state.analysisRequestId) return;
+  state.aiUpdating = state.provider !== "local";
+  setAgentStep("schedule", "done");
+  setAgentStep("preview", "done");
+  setAgentStep("news", "active");
+  setAgentStep("research", state.provider === "local" ? "idle" : "active");
+  setAgentStep("model", state.provider === "local" ? "idle" : "active");
+  applyAnalysisData(preview, { switchingTournament });
+  loadNews({ refresh: options.refresh }).catch(() => {
+    state.news = [];
+    renderNews();
+    setAgentStep("news", "warn");
+  });
+  if (state.provider === "local") {
+    state.aiUpdating = false;
+    setAgentStep("research", "idle");
+    setAgentStep("model", "idle");
+    renderHeader();
+    return;
+  }
   const params = new URLSearchParams({
     tournament: tournamentId,
     provider: state.provider
@@ -111,16 +168,55 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
   if (options.refresh) params.set("refresh", "1");
   const data = await requestJson(`/api/analyze?${params.toString()}`);
   if (requestId !== state.analysisRequestId) return;
+  state.aiUpdating = false;
+  const hasResearchWarning = (data.analysis?.researchWarnings || []).length > 0;
+  setAgentStep("research", hasResearchWarning ? "warn" : data.ruleResearch || data.roster ? "done" : "warn");
+  setAgentStep("model", data.analysis?.llmError ? "warn" : "done");
+  applyAnalysisData(data);
+  if (data.analysis?.llmError) {
+    els.heroSummary.textContent = `DeepSeek 暂不可用，当前展示本地分析：${friendlyModelError(data.analysis.llmError)}`;
+  }
+  loadNews({ refresh: options.refresh }).catch(() => setAgentStep("news", "warn"));
+}
+
+const AGENT_STEPS = [
+  { id: "schedule", label: "赛程" },
+  { id: "preview", label: "本地预览" },
+  { id: "news", label: "新闻" },
+  { id: "research", label: "规则/阵容" },
+  { id: "model", label: "AI 生成" }
+];
+
+function setAgentStep(id, status) {
+  state.agentSteps = state.agentSteps || Object.fromEntries(AGENT_STEPS.map((step) => [step.id, "idle"]));
+  state.agentSteps[id] = status;
+  renderAgentStatus();
+}
+
+function renderAgentStatus() {
+  if (!els.agentStatus) return;
+  const steps = state.agentSteps || {};
+  els.agentStatus.innerHTML = AGENT_STEPS.map((step) => {
+    const status = steps[step.id] || "idle";
+    return `<span class="${status}"><i></i>${step.label}</span>`;
+  }).join("");
+}
+
+function friendlyModelError(message) {
+  const text = String(message || "");
+  if (/\b401\b/.test(text)) return "API Key 无效或未正确加载";
+  if (/\b402\b/.test(text)) return "账户余额不足、额度耗尽或计费状态异常";
+  if (/\b429\b/.test(text)) return "请求过于频繁或接口额度受限";
+  return text || "未知接口错误";
+}
+
+function applyAnalysisData(data, options = {}) {
   state.tournament = data.tournament;
   state.analysis = data.analysis;
   state.meta = data.meta || state.meta;
   els.tournamentSelect.value = state.tournament.id;
   renderAll();
-  if (switchingTournament) resetAgentForTournament();
-  loadNews({ refresh: options.refresh, tournamentId: state.tournament.id }).catch(() => {
-    state.news = [];
-    renderNews();
-  });
+  if (options.switchingTournament) resetAgentForTournament();
 }
 
 function renderAll() {
@@ -222,11 +318,11 @@ function preloadNewsImages(items, activeIndex) {
 function renderEmptyNews() {
   els.newsStage.innerHTML = `
     <div class="news-hero news-empty">
-      <img src="/api/news-cover?title=${encodeURIComponent("暂无可展示国内新闻")}&source=MatchMind&league=${encodeURIComponent(state.tournament?.id || "default")}" alt="" loading="lazy">
+      <img src="/api/news-cover?title=${encodeURIComponent("赛事新闻正在读取")}&source=MatchMind&league=${encodeURIComponent(state.tournament?.id || "default")}" alt="" loading="lazy">
       <div class="news-overlay">
         <p class="eyebrow">Trending</p>
-        <h3>暂无可展示国内新闻</h3>
-        <span>请稍后刷新，或检查网络与新闻源配置</span>
+        <h3>赛事新闻正在读取</h3>
+        <span>请稍后刷新，或检查本机网络与代理设置</span>
       </div>
     </div>
   `;
@@ -251,7 +347,10 @@ function renderHeader() {
   els.gameLabel.textContent = `${state.tournament.game} · ${state.tournament.stage}`;
   els.tournamentTitle.textContent = state.tournament.name;
   els.sourceText.textContent = sourceSummary();
-  els.heroSummary.textContent = firstLine(state.analysis.summary);
+  renderSourceDiagnostics();
+  els.heroSummary.textContent = state.aiUpdating
+    ? `${firstLine(state.analysis.summary)}（当前为本地预览，AI 正在联网更新...）`
+    : firstLine(state.analysis.summary);
   els.liveCount.textContent = live;
   els.keyCount.textContent = state.analysis.keyMatches.filter((item) => item.importance !== "低").length;
   const isPlayoffs = state.tournament.rules.phase === "playoffs";
@@ -264,14 +363,83 @@ function renderHeader() {
   }
 }
 
+function renderSourceDiagnostics() {
+  if (!els.sourceDiagnostics) return;
+  const diagnostics = state.newsMeta?.sourceDiagnostics || [];
+  if (!diagnostics.length) {
+    els.sourceDiagnostics.innerHTML = "";
+    return;
+  }
+  const grouped = summarizeSourceDiagnostics(diagnostics);
+  els.sourceDiagnostics.innerHTML = grouped.map((item) => `
+    <span class="${item.status}" title="${escapeHtml(item.title)}">
+      ${escapeHtml(item.label)} ${item.count}
+    </span>
+  `).join("");
+}
+
+function summarizeSourceDiagnostics(diagnostics) {
+  const groups = [
+    {
+      label: "玩加",
+      test: (item) => /玩加|wanplus/i.test(`${item.source || ""} ${item.url || ""}`)
+    },
+    {
+      label: "LPL官方",
+      test: (item) => /LPL赛事官网|lpl\.qq|lol\.qq/i.test(`${item.source || ""} ${item.url || ""}`)
+    },
+    {
+      label: "搜索",
+      test: (item) => {
+        const text = `${item.source || ""} ${item.kind || ""}`;
+        return /Tavily|搜索|search/i.test(text) && !/玩加|wanplus/i.test(text);
+      }
+    }
+  ];
+  const result = groups.map((group) => {
+    const matches = diagnostics.filter(group.test);
+    const count = matches.reduce((sum, item) => sum + Number(item.count || 0), 0);
+    const errors = matches.filter((item) => item.status === "error");
+    const status = errors.length ? "warn" : count ? "ok" : "empty";
+    return {
+      label: group.label,
+      count,
+      status,
+      title: matches.map(sourceDiagnosticTitle).join("\n") || "暂无该源诊断"
+    };
+  });
+  const otherErrors = diagnostics.filter((item) => item.status === "error" && !groups.some((group) => group.test(item)));
+  if (otherErrors.length) {
+    result.push({
+      label: "错误",
+      count: otherErrors.length,
+      status: "warn",
+      title: otherErrors.map(sourceDiagnosticTitle).join("\n")
+    });
+  }
+  return result;
+}
+
+function sourceDiagnosticTitle(item) {
+  const bits = [
+    item.source || item.url || "未知源",
+    item.status || "unknown",
+    `${item.count || 0}条`,
+    item.error || ""
+  ].filter(Boolean);
+  return bits.join(" · ");
+}
+
 function renderFocus() {
   const stories = state.analysis.focusStories || [];
+  const focusLabel = state.aiUpdating ? "AI 正在更新" : state.analysis.llmError ? "本地兜底焦点" : state.analysis.aiEnhanced ? "AI 赛区焦点" : "赛区焦点";
   els.focusStrip.innerHTML = stories.map((story) => `
     <article class="focus-card ${story.tone || "watch"}">
       <div>
-        <p class="eyebrow">赛区焦点</p>
+        <p class="eyebrow">${focusLabel}</p>
         <h3>${escapeHtml(story.headline)}</h3>
         <p>${escapeHtml(story.body)}</p>
+        ${state.aiUpdating ? `<p class="ai-updating-line">正在调用 ${escapeHtml(state.provider)} 结合最新新闻、规则证据和赛程重写焦点...</p>` : ""}
       </div>
       <div class="focus-chips">
         ${(story.chips || []).map((chip) => `<span>${escapeHtml(chip)}</span>`).join("")}
@@ -292,6 +460,8 @@ function sourceSummary() {
   if (state.tournament?.standingsSource === "schedule-derived") parts.push("近期赛程推算榜");
   if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);
   if (meta.warning) parts.push(meta.warning);
+  if (state.newsMeta?.warning) parts.push(`新闻源提示：${state.newsMeta.warning}`);
+  if (state.analysis?.researchWarnings?.length) parts.push(state.analysis.researchWarnings[0]);
   return parts.join(" · ");
 }
 
@@ -383,7 +553,16 @@ function renderPlayoffPhase(phase) {
           <span>${escapeHtml(card.score)}</span>
         </div>
         ${card.stake?.headline ? `<div class="phase-stake">${escapeHtml(card.stake.headline)}</div>` : ""}
+        ${state.aiUpdating ? `<div class="phase-stake ai-updating">AI 正在更新这场比赛的独立影响解读</div>` : ""}
         <p>${escapeHtml(card.impact)}</p>
+        ${card.researchEvidence?.length ? `
+          <div class="phase-evidence">
+            <span>规则依据</span>
+            ${card.researchEvidence.map((item) => `
+              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.source || item.title)}</a>
+            `).join("")}
+          </div>
+        ` : ""}
       </article>
     `).join("")}
   `;

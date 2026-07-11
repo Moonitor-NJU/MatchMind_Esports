@@ -11,6 +11,7 @@ const PORT = Number(process.env.PORT || 3000);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_FILE = path.join(ROOT, "data", "tournaments.json");
+const REALTIME_SNAPSHOT_FILE = path.join(ROOT, "data", "realtime-snapshot.json");
 const RULES_FILE = path.join(ROOT, "data", "rules.json");
 const ENV_FILE = path.join(ROOT, ".env");
 
@@ -21,8 +22,12 @@ const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60 * 1000
 const ROSTER_CACHE_TTL_MS = Number(process.env.ROSTER_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
 const RULE_RESEARCH_CACHE_TTL_MS = Number(process.env.RULE_RESEARCH_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
 const ANALYSIS_CACHE_TTL_MS = Number(process.env.ANALYSIS_CACHE_TTL_MS || 10 * 60 * 1000);
+const FAILED_ANALYSIS_CACHE_TTL_MS = Number(process.env.FAILED_ANALYSIS_CACHE_TTL_MS || 90 * 1000);
 const ROSTER_ANALYSIS_TIMEOUT_MS = Number(process.env.ROSTER_ANALYSIS_TIMEOUT_MS || 9_000);
 const RULE_ANALYSIS_TIMEOUT_MS = Number(process.env.RULE_ANALYSIS_TIMEOUT_MS || 12_000);
+const PANDASCORE_ENRICH_ROSTERS = String(process.env.PANDASCORE_ENRICH_ROSTERS || "0") === "1";
+const PANDASCORE_STANDINGS_LIMIT = Number(process.env.PANDASCORE_STANDINGS_LIMIT || 8);
+const PANDASCORE_ROSTER_LIMIT = Number(process.env.PANDASCORE_ROSTER_LIMIT || 12);
 const newsCache = new Map();
 const rosterCache = new Map();
 const ruleResearchCache = new Map();
@@ -83,10 +88,37 @@ async function getTournamentData(options = {}) {
     const realTimeData = await fetchRealTimeData();
     if (realTimeData.tournaments.length) {
       liveDataCache = { fetchedAt: now, data: realTimeData };
+      writeRealtimeSnapshot(realTimeData);
       return realTimeData;
     }
     throw new Error("实时接口没有返回可展示的比赛");
   } catch (error) {
+    if (liveDataCache?.data?.tournaments?.length && liveDataCache.data.meta?.mode === "realtime") {
+      const stale = withMeta(
+        { tournaments: liveDataCache.data.tournaments },
+        {
+          mode: "stale-realtime",
+          source: "PandaScore 实时赛事 API（内存快照）",
+          updatedAt: liveDataCache.data.meta?.updatedAt || new Date(liveDataCache.fetchedAt).toISOString(),
+          warning: `实时赛事接口暂不可用，已保留上一次实时数据：${error.message}`
+        }
+      );
+      return stale;
+    }
+    const snapshot = readRealtimeSnapshot();
+    if (snapshot?.tournaments?.length) {
+      const stale = withMeta(
+        { tournaments: snapshot.tournaments },
+        {
+          mode: "stale-realtime",
+          source: "PandaScore 实时赛事 API（本地快照）",
+          updatedAt: snapshot.meta?.updatedAt || snapshot.savedAt || new Date().toISOString(),
+          warning: `实时赛事接口暂不可用，已使用上一次实时快照：${error.message}`
+        }
+      );
+      liveDataCache = { fetchedAt: now, data: stale };
+      return stale;
+    }
     const fallback = withMeta(localData, {
       mode: "fallback",
       source: "本地演示数据",
@@ -95,6 +127,27 @@ async function getTournamentData(options = {}) {
     });
     liveDataCache = { fetchedAt: now, data: fallback };
     return fallback;
+  }
+}
+
+function writeRealtimeSnapshot(data) {
+  try {
+    if (!data?.tournaments?.length) return;
+    fs.writeFileSync(REALTIME_SNAPSHOT_FILE, JSON.stringify({
+      ...data,
+      savedAt: new Date().toISOString()
+    }, null, 2), "utf8");
+  } catch {
+    // Snapshot persistence is best-effort; live data should still render.
+  }
+}
+
+function readRealtimeSnapshot() {
+  try {
+    if (!fs.existsSync(REALTIME_SNAPSHOT_FILE)) return null;
+    return readJson(REALTIME_SNAPSHOT_FILE);
+  } catch {
+    return null;
   }
 }
 
@@ -151,23 +204,20 @@ async function fetchPandaScoreLol() {
   const from = new Date(now.getTime() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
   const to = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000).toISOString();
   const endpoints = pandaMatchEndpoints(baseUrl, game, limit, from, to);
-  const batches = await Promise.all(endpoints.map(async (endpoint) => {
-    const response = await fetch(endpoint, {
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${token}`
-      }
-    });
-    if (!response.ok) {
-      throw new Error(`PandaScore request failed: ${response.status}`);
-    }
-    return response.json();
-  }));
-  const matches = dedupeMatches(batches.flat());
+  let usedBroadFallback = false;
+  let matches = await fetchPandaScoreMatches(endpoints, token);
+  if (shouldUseBroadPandaFallback()) {
+    const fixedMatches = matches;
+    const broadMatches = await fetchPandaScoreMatches([pandaMatchEndpoint(baseUrl, game, limit, from, to, null)], token);
+    usedBroadFallback = true;
+    matches = dedupeMatches([...fixedMatches, ...broadMatches]);
+  }
   const tournaments = normalizePandaScoreMatches(matches, game);
   await enrichWithPandaTournamentMatches(tournaments, baseUrl, token, game);
   await enrichWithPandaStandings(tournaments, baseUrl, token);
-  await enrichWithPandaTeamRosters(tournaments, baseUrl, token);
+  if (PANDASCORE_ENRICH_ROSTERS) {
+    await enrichWithPandaTeamRosters(tournaments, baseUrl, token);
+  }
   finalizeTournamentData(tournaments);
   return withMeta({ tournaments }, {
     mode: "realtime",
@@ -175,6 +225,7 @@ async function fetchPandaScoreLol() {
     updatedAt: new Date().toISOString(),
     queryWindow: { from, to },
     queryCount: endpoints.length,
+    broadFallback: usedBroadFallback,
     rawMatchCount: matches.length,
     matchCount: tournaments.reduce((sum, tournament) => sum + tournament.matches.length, 0),
     competitionCount: tournaments.length,
@@ -187,6 +238,22 @@ async function fetchPandaScoreLol() {
       standingsSource: tournament.standingsSource || "schedule-derived"
     }))
   });
+}
+
+async function fetchPandaScoreMatches(endpoints, token) {
+  const batches = await Promise.all(endpoints.map(async (endpoint) => {
+    const response = await fetch(endpoint, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`PandaScore request failed: ${response.status}`);
+    }
+    return response.json();
+  }));
+  return dedupeMatches(batches.flat());
 }
 
 async function enrichWithPandaTournamentMatches(tournaments, baseUrl, token, game) {
@@ -254,14 +321,22 @@ function pandaMatchEndpoints(baseUrl, game, limit, from, to) {
     : csv(process.env.PANDASCORE_DEFAULT_LEAGUE_IDS || "294,293,4197,5262,4198,5351");
   const leagueIds = configured.length ? configured : defaultFocus;
   const ids = leagueIds.length ? leagueIds : [null];
-  return ids.map((leagueId) => {
-    const endpoint = new URL(`/${game}/matches`, baseUrl);
-    endpoint.searchParams.set("sort", "begin_at");
-    endpoint.searchParams.set("per_page", String(limit));
-    endpoint.searchParams.set("range[begin_at]", `${from},${to}`);
-    if (leagueId) endpoint.searchParams.set("filter[league_id]", leagueId);
-    return endpoint;
-  });
+  return ids.map((leagueId) => pandaMatchEndpoint(baseUrl, game, limit, from, to, leagueId));
+}
+
+function pandaMatchEndpoint(baseUrl, game, limit, from, to, leagueId = null) {
+  const endpoint = new URL(`/${game}/matches`, baseUrl);
+  endpoint.searchParams.set("sort", "begin_at");
+  endpoint.searchParams.set("per_page", String(limit));
+  endpoint.searchParams.set("range[begin_at]", `${from},${to}`);
+  if (leagueId) endpoint.searchParams.set("filter[league_id]", leagueId);
+  return endpoint;
+}
+
+function shouldUseBroadPandaFallback() {
+  if (String(process.env.PANDASCORE_DISABLE_BROAD_FALLBACK || "0") === "1") return false;
+  return (process.env.PANDASCORE_FOCUS || "cn-major").toLowerCase() !== "all" &&
+    !csv(process.env.PANDASCORE_LEAGUE_IDS).length;
 }
 
 function dedupeMatches(matches) {
@@ -286,7 +361,11 @@ function normalizePandaScoreMatches(matches, game) {
     accepted.push(raw);
   }
 
-  const sourceMatches = accepted.length ? accepted : Array.isArray(matches) ? matches : [];
+  const sourceMatches = accepted.length
+    ? accepted
+    : (process.env.PANDASCORE_FOCUS || "cn-major").toLowerCase() === "all"
+      ? Array.isArray(matches) ? matches : []
+      : [];
 
   for (const raw of sourceMatches) {
     const opponents = Array.isArray(raw.opponents) ? raw.opponents.slice(0, 2) : [];
@@ -348,9 +427,9 @@ function normalizePandaScoreMatches(matches, game) {
 }
 
 async function enrichWithPandaStandings(tournaments, baseUrl, token) {
-  await Promise.all(tournaments.map(async (tournament) => {
+  for (const tournament of tournaments.slice(0, PANDASCORE_STANDINGS_LIMIT)) {
     const tournamentId = tournament.externalIds?.pandascoreTournamentId;
-    if (!tournamentId) return;
+    if (!tournamentId) continue;
     try {
       const endpoint = new URL(`/tournaments/${tournamentId}/standings`, baseUrl);
       const response = await fetch(endpoint, {
@@ -375,7 +454,10 @@ async function enrichWithPandaStandings(tournaments, baseUrl, token) {
     } catch (error) {
       tournament.standingsWarning = `官方积分榜暂不可用：${error.message}`;
     }
-  }));
+  }
+  for (const tournament of tournaments.slice(PANDASCORE_STANDINGS_LIMIT)) {
+    tournament.standingsWarning = "为避免 PandaScore 限流，本轮未请求该赛事官方积分榜";
+  }
 }
 
 async function enrichWithPandaTeamRosters(tournaments, baseUrl, token) {
@@ -387,8 +469,8 @@ async function enrichWithPandaTeamRosters(tournaments, baseUrl, token) {
       teamsByPandaId.get(team.pandaId).push(team);
     }
   }
-  const ids = Array.from(teamsByPandaId.keys()).slice(0, 80);
-  await Promise.all(ids.map(async (pandaId) => {
+  const ids = Array.from(teamsByPandaId.keys()).slice(0, PANDASCORE_ROSTER_LIMIT);
+  for (const pandaId of ids) {
     try {
       const endpoint = new URL(`/teams/${pandaId}`, baseUrl);
       const response = await fetch(endpoint, {
@@ -408,7 +490,7 @@ async function enrichWithPandaTeamRosters(tournaments, baseUrl, token) {
     } catch {
       // Roster enrichment is best-effort; schedule and standings should still render.
     }
-  }));
+  }
 }
 
 function mergeStandingTeamsIntoTournament(tournament, standings) {
@@ -701,20 +783,59 @@ function escapeRegExp(value) {
 }
 
 function comparePandaTournaments(a, b) {
+  const aLive = tournamentHasLiveMatch(a) ? 0 : 1;
+  const bLive = tournamentHasLiveMatch(b) ? 0 : 1;
+  if (aLive !== bLive) return aLive - bLive;
+
+  const aOpen = tournamentHasOpenMatch(a) ? 0 : 1;
+  const bOpen = tournamentHasOpenMatch(b) ? 0 : 1;
+  if (aOpen !== bOpen) return aOpen - bOpen;
+
   const priority = (value) => {
     const text = `${value.name} ${value.stage}`.toLowerCase();
-    const keywords = ["lpl", "lck", "ewc", "esports world cup", "msi", "world", "lec"];
+    const keywords = [
+      "msi",
+      "mid-season",
+      "mid season",
+      "international",
+      "world championship",
+      "worlds",
+      "ewc",
+      "esports world cup",
+      "lpl",
+      "lck",
+      "lec",
+      "lcs",
+      "lcp"
+    ];
     const index = keywords.findIndex((keyword) => keywordMatches(text, keyword));
     return index === -1 ? keywords.length : index;
   };
   const byPriority = priority(a) - priority(b);
   if (byPriority) return byPriority;
-  const aLive = a.matches.some((match) => match.status === "live") ? 0 : 1;
-  const bLive = b.matches.some((match) => match.status === "live") ? 0 : 1;
-  if (aLive !== bLive) return aLive - bLive;
-  const aNext = a.matches[0]?.startsAt || "";
-  const bNext = b.matches[0]?.startsAt || "";
+
+  const aNext = nextTournamentTime(a);
+  const bNext = nextTournamentTime(b);
   return aNext.localeCompare(bNext);
+}
+
+function tournamentHasLiveMatch(tournament) {
+  return (tournament.matches || []).some((match) => match.status === "live");
+}
+
+function tournamentHasOpenMatch(tournament) {
+  return (tournament.matches || []).some((match) => match.status !== "finished");
+}
+
+function nextTournamentTime(tournament) {
+  const open = (tournament.matches || [])
+    .filter((match) => match.status !== "finished")
+    .sort((a, b) => String(a.startsAt).localeCompare(String(b.startsAt)))[0];
+  if (open?.startsAt) return open.startsAt;
+  const latestFinished = (tournament.matches || [])
+    .filter((match) => match.status === "finished")
+    .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)))[0];
+  return latestFinished?.startsAt || "";
 }
 
 function normalizePandaTeam(rawTeam, teams, colors) {
@@ -1208,7 +1329,6 @@ function playoffStakeForCard(tournament, card) {
     if (stake.status && stake.status !== card.status) continue;
     const roundIncludes = Array.isArray(stake.roundIncludes) ? stake.roundIncludes : [];
     if (roundIncludes.length && !roundIncludes.some((item) => roundText.includes(String(item).toLowerCase()))) continue;
-    if (!card.winner && (stake.headline || stake.body || stake.cardImpact || "").includes("{winner}")) continue;
     return {
       id: stake.id,
       headline: applyStakeTemplate(stake.headline, card),
@@ -1911,8 +2031,16 @@ function fallbackFocus(tournament, teams, phaseView) {
   };
 }
 
-function compactContext(tournament, analysis, newsItems = [], rosterData = null, ruleResearch = null) {
+function compactContext(tournament, analysis, newsItems = [], rosterData = null, ruleResearch = null, options = {}) {
   const isPlayoffs = analysis.phaseView?.type === "playoffs";
+  const fast = options.fast === true;
+  const relatedNews = relatedNewsForTournament(newsItems, tournament)
+    .slice(0, fast ? 3 : 5)
+    .map((item) => fast ? {
+      title: item.title,
+      source: item.source,
+      publishedAt: item.publishedAt
+    } : item);
   return JSON.stringify({
     tournament: {
       name: tournament.name,
@@ -1929,23 +2057,88 @@ function compactContext(tournament, analysis, newsItems = [], rosterData = null,
     },
     standings: isPlayoffs ? [] : analysis.standings,
     qualification: isPlayoffs ? [] : analysis.teams,
-    focusStories: analysis.focusStories,
-    audienceSignals: analysis.audienceSignals || [],
+    focusStories: (analysis.focusStories || []).slice(0, 2),
+    audienceSignals: (analysis.audienceSignals || []).slice(0, 8),
     webContext: {
       source: process.env.TAVILY_API_KEY
         ? "Tavily 实时网页搜索 + 项目抓取的 RSS/赛事新闻源。搜索结果会经过赛区、时效和相关性过滤。"
         : "项目抓取的 RSS/网页新闻源和页面新闻轮播；未配置搜索 API 时不等同于实时全网搜索。",
-      relatedNews: relatedNewsForTournament(newsItems, tournament).slice(0, 8)
+      relatedNews
     },
-    rosterContext: rosterContextForTournament(tournament, rosterData),
-    ruleResearch: ruleResearch || {
+    rosterContext: fast ? {
+      source: "快速分析模式已省略阵容细节。不要凭记忆补当前选手阵容；除非 relatedNews 明确出现，否则不要点名选手。",
+      teams: []
+    } : rosterContextForTournament(tournament, rosterData),
+    ruleResearch: compactRuleResearch(ruleResearch, fast ? 3 : 8, fast ? 160 : 260) || {
       source: "未执行联网规则检索",
       evidence: []
     },
-    phaseView: analysis.phaseView,
-    playoffTeamPaths: isPlayoffs ? buildPlayoffTeamPaths(analysis.phaseView) : [],
-    keyMatches: analysis.keyMatches.slice(0, 5)
+    phaseView: compactPhaseView(analysis.phaseView, { fast }),
+    playoffTeamPaths: fast ? [] : (isPlayoffs ? buildPlayoffTeamPaths(analysis.phaseView).slice(0, 8) : []),
+    keyMatches: analysis.keyMatches.slice(0, fast ? 3 : 5)
   });
+}
+
+function compactPhaseView(phaseView, options = {}) {
+  if (!phaseView) return null;
+  const sourceCards = phaseView.cards || [];
+  const selectedCards = options.fast
+    ? selectFastPhaseCards(sourceCards)
+    : sourceCards;
+  return {
+    type: phaseView.type,
+    title: phaseView.title,
+    completedCount: phaseView.completedCount,
+    upcomingCount: phaseView.upcomingCount,
+    warning: phaseView.warning || null,
+    cards: selectedCards.map((card) => ({
+      id: card.id,
+      bracket: card.bracket,
+      status: card.status,
+      startsAt: card.startsAt,
+      bestOf: card.bestOf,
+      left: card.left,
+      right: card.right,
+      score: card.score,
+      winner: card.winner,
+      loser: card.loser,
+      stake: card.stake ? {
+        headline: card.stake.headline,
+        body: card.stake.body
+      } : null,
+      impact: String(card.impact || "").slice(0, options.fast ? 140 : 300)
+    }))
+  };
+}
+
+function selectFastPhaseCards(cards) {
+  const finished = cards.filter((card) => card.status === "finished").slice(-4);
+  const unfinished = cards.filter((card) => card.status !== "finished").slice(0, 4);
+  const seen = new Set();
+  return [...finished, ...unfinished].filter((card) => {
+    if (!card || seen.has(card.id)) return false;
+    seen.add(card.id);
+    return true;
+  });
+}
+
+function compactRuleResearch(ruleResearch, limit = 8, snippetLength = 260) {
+  if (!ruleResearch) return null;
+  return {
+    source: ruleResearch.source,
+    updatedAt: ruleResearch.updatedAt,
+    warning: ruleResearch.warning || null,
+    evidence: (ruleResearch.evidence || []).slice(0, limit).map((item) => ({
+      title: item.title,
+      source: item.source,
+      url: item.url,
+      confidence: item.confidence,
+      sourceType: item.sourceType,
+      scope: item.scope,
+      usableForRules: item.usableForRules,
+      snippet: String(item.snippet || item.description || "").slice(0, snippetLength)
+    }))
+  };
 }
 
 function rosterContextForTournament(tournament, rosterData = null) {
@@ -1953,7 +2146,7 @@ function rosterContextForTournament(tournament, rosterData = null) {
   return {
     source: "PandaScore 队伍 payload + 后端实时网页检索。若为空，代表当前上下文没有可靠阵容，不代表可以使用历史记忆补全。",
     updatedAt: rosterData?.updatedAt || null,
-    guardrail: "只有 rosterContext.teams[].roster、rosterContext.teams[].retrievedEvidence 或 webContext.relatedNews 标题/摘要明确出现的选手名才可被提及。缺失时必须写“当前阵容数据不足”，禁止用历史阵容、旧世界赛阵容或训练记忆替代。",
+    guardrail: "只有 rosterContext.teams[].roster、rosterContext.teams[].retrievedEvidence 或 webContext.relatedNews 标题/摘要明确出现的选手名才可被提及。缺失时默认避开选手、对位和英雄池话题，不要主动写阵容不足免责声明；只有用户明确询问选手、首发、阵容、对位或英雄池时才简短说明证据不足。禁止用历史阵容、旧世界赛阵容或训练记忆替代。",
     teams: (tournament.teams || []).map((team) => ({
       name: team.name,
       rosterSource: team.rosterSource || null,
@@ -1961,7 +2154,12 @@ function rosterContextForTournament(tournament, rosterData = null) {
         name: player.name,
         role: player.role || null
       })),
-      retrievedEvidence: (evidenceByTeam.get(team.name)?.evidence || []).slice(0, 5)
+      retrievedEvidence: (evidenceByTeam.get(team.name)?.evidence || []).slice(0, 2).map((item) => ({
+        title: item.title,
+        source: item.source,
+        url: item.url,
+        snippet: String(item.snippet || item.description || "").slice(0, 180)
+      }))
     }))
   };
 }
@@ -2021,12 +2219,13 @@ function buildPlayoffTeamPaths(phaseView) {
 }
 
 async function enhanceAnalysisWithLlm(provider, tournament, analysis, newsItems = [], rosterData = null, ruleResearch = null) {
-  const prompt = [
+  let prompt = [
     "请基于结构化数据输出 JSON，不要输出 Markdown。",
     "JSON 格式：{\"summary\":\"两到四句中文摘要\",\"focusStories\":[{\"tone\":\"hot|watch\",\"headline\":\"一句焦点标题\",\"body\":\"两到三句，必须点明哪些比赛/赛果为什么重要\",\"chips\":[\"标签1\",\"标签2\"]}],\"cardInsights\":[{\"id\":\"比赛id\",\"impact\":\"两到三句独立赛果/赛前权益解读\",\"evidenceIndexes\":[0,2]}]}。",
     "优先识别 ruleResearch.evidence、完整 phaseView.cards、audienceSignals、关键晋级权益、国际赛名额、胜败者组路径和还没打的直接影响比赛。",
     "ruleResearch.evidence 是后端针对当前赛事动态联网检索到的规则/资格证据。涉及国际赛门票、晋级资格、种子和淘汰规则时，必须以这些证据为优先依据；证据不足时明确保留不确定性。",
     "只有 ruleResearch.evidence 中 usableForRules=true 的条目可以证明晋级、淘汰、门票或种子结论。优先采用 scope=current-event 且 confidence=high 的规则证据；sourceType=opinion-community 的内容只能作为舆论背景，绝不能作为规则事实。",
+    "如果规则证据说明某场是种子/门票决胜战，不要把它机械称为总决赛；例如 Road to MSI 可能是第一种子战和第二种子战，而不是 LPL 式最终决赛。",
     "international-general 只能证明国际赛事总体名额，不能单独证明某场比赛会锁定门票。conflictsWithBracket=true 的内容与当前签表冲突，必须忽略。只有 medium/low 证据时要写成“根据当前检索资料”，不得把它表述为官方确认。多个可靠来源冲突时必须指出冲突。",
     "如果 phaseView.type 是 playoffs，请为 phaseView.cards 中每一张卡生成独立 cardInsights。你需要读取整张签表，判断该卡位于首轮、中期、败者组生死轮、胜者组决赛、败者组决赛或总决赛，并结合后续具体对手和联网规则证据解释意义。",
     "不同比赛不能复用同一句路径模板。应说明该赛果让队伍还需经过哪些已知对手/轮次、是否失去容错、是否淘汰、是否进入决赛或获得国际赛资格；无法由签表或联网证据确认的事实不得编造。",
@@ -2038,25 +2237,57 @@ async function enhanceAnalysisWithLlm(provider, tournament, analysis, newsItems 
     "如果 contextGuardrail 标明是季后赛，绝对不要用 0-0、官方排名、小分和晋级线胜场差做结论；这些字段在季后赛上下文中应视为无效。",
     "可使用 webContext.relatedNews 作为网页舆论参考；没有相关新闻时不要声称模型已全网搜索。",
     "可使用 rosterContext.teams[].retrievedEvidence 作为当前阵容/首发/名单变动检索证据；涉及选手名时要说明依据来自这些证据。",
-    "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进分析；如果 roster 和 retrievedEvidence 都为空，必须避免点名并说明当前阵容上下文不足。",
+    "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进分析；如果 roster 和 retrievedEvidence 都为空，必须避免点名，并且不要主动写“阵容信息不足/无法分析英雄池”这类免责声明，除非用户明确询问阵容或英雄池。",
     "不得编造结构化数据中不存在的赛果；如果规则只来自项目配置，请用“按当前规则配置/以官方公告为准”保持边界。"
   ].join("\n");
-  const llm = await callLlm(provider, prompt, compactContext(tournament, analysis, newsItems, rosterData, ruleResearch));
-  if (!llm) return false;
+  if (provider === "qwen") {
+    prompt = [
+      "请基于结构化数据输出严格 JSON，不要输出 Markdown、解释过程或思考内容。",
+      "JSON 格式：{\"summary\":\"两到三句中文摘要\",\"focusStories\":[{\"tone\":\"hot|watch\",\"headline\":\"一句焦点标题\",\"body\":\"两到三句，说清这场/这组赛果为什么值得看\",\"chips\":[\"标签1\",\"标签2\"]}],\"cardInsights\":[{\"id\":\"比赛id\",\"impact\":\"两到三句独立赛果/赛前权益解读\",\"evidenceIndexes\":[0]}]}。",
+      "只需要生成 1-2 个 focusStories；cardInsights 只覆盖 phaseView.cards 中未结束比赛和最近关键已结束比赛，最多 4 条。",
+      "如果是季后赛，严禁用 0-0、排名、小分、胜场差做结论；必须看 phaseView.cards、比分、胜败者组路径和 ruleResearch.evidence。",
+      "涉及 MSI/国际赛门票、淘汰、决赛资格时，必须用 usableForRules=true 的 ruleResearch.evidence；证据不足就写“不确定”，不要硬说官方确认。",
+      "如果 ruleResearch.evidence 说明赛事是 Road to MSI/种子资格路径，不要自动补出总决赛；必须区分一号种子战、二号种子决胜战和真正决赛。",
+      "不要套模板，不要写“按项目赛制配置”“本地规则引擎”“官方签表尚未给出”。直接用中国观众看得懂的话说：谁压力大、赢了去哪、输了多危险、为什么今晚值得看。",
+      "不要凭记忆补选手阵容；当前上下文没有阵容证据时，不点名选手，也不要主动写阵容不足免责声明。"
+    ].join("\n");
+  }
+  const context = compactContext(tournament, analysis, newsItems, rosterData, ruleResearch, { fast: provider === "qwen" });
+  const llm = await callLlm(provider, prompt, context);
+  analysis.llmRawLength = String(llm || "").length;
+  if (!llm) {
+    analysis.llmError = `Provider ${provider} returned empty analysis text`;
+    return false;
+  }
   const parsed = parseJsonFromLlm(llm);
   if (!parsed) {
+    const fallback = fallbackLlmTextToAnalysis(llm);
+    if (fallback) {
+      analysis.summary = fallback.summary;
+      analysis.focusStories = fallback.focusStories;
+      analysis.aiEnhanced = true;
+      analysis.aiFallbackFormat = true;
+      analysis.aiAppliedFields = 1;
+      return true;
+    }
     analysis.llmError = "LLM returned non-JSON analysis";
     return false;
   }
   if (typeof parsed.summary === "string" && parsed.summary.trim()) {
     analysis.summary = sanitizeDisplayText(parsed.summary.trim());
   }
+  let appliedFields = 0;
+  let visibleInsightFields = 0;
   if (Array.isArray(parsed.focusStories)) {
     const focusStories = parsed.focusStories
       .map(normalizeLlmFocusStory)
       .filter(Boolean)
       .slice(0, 2);
-    if (focusStories.length) analysis.focusStories = focusStories;
+    if (focusStories.length) {
+      analysis.focusStories = focusStories;
+      appliedFields += 1;
+      visibleInsightFields += 1;
+    }
   }
   if (Array.isArray(parsed.cardInsights) && analysis.phaseView?.type === "playoffs") {
     const evidence = ruleResearch?.evidence || [];
@@ -2081,10 +2312,20 @@ async function enhanceAnalysisWithLlm(provider, tournament, analysis, newsItems 
         card.impact = insights.get(card.id).impact;
         card.researchEvidence = insights.get(card.id).evidence;
         card.aiEnhanced = true;
+        appliedFields += 1;
+        visibleInsightFields += 1;
       }
     }
   }
+  if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+    appliedFields += 1;
+  }
+  if (!visibleInsightFields) {
+    analysis.llmError = "LLM returned no usable focus or match insight";
+    return false;
+  }
   analysis.aiEnhanced = true;
+  analysis.aiAppliedFields = appliedFields;
   return true;
 }
 
@@ -2099,7 +2340,7 @@ function buildChatPrompt(question) {
     "只有 ruleResearch.evidence 中 usableForRules=true 的条目可以证明规则结论；sourceType=opinion-community 仅代表舆论，conflictsWithBracket=true 必须忽略。规则证据只有 medium/low 可信度时，不得写成官方确认；多个可靠来源冲突时要明确指出。",
     "可以使用 webContext.relatedNews 作为网页舆论材料；如果没有相关新闻，不要假装已经全网搜索。",
     "可以使用 rosterContext.teams[].retrievedEvidence 作为当前阵容/首发/名单变动检索证据；不要把旧阵容回忆当作事实。",
-    "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进回答；如果 roster 和 retrievedEvidence 都为空，直接说当前阵容上下文不足，不要使用 2021、2023 等历史阵容。",
+    "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进回答；如果 roster 和 retrievedEvidence 都为空，默认避开选手和英雄池话题。只有用户明确问选手、首发、阵容、对位或英雄池时，才简短说明当前阵容证据不足；不要使用 2021、2023 等历史阵容。",
     "如果结构化数据不足以支撑判断，要明确说缺哪类数据，并给出基于现有信息的保守判断。",
     "回答尽量具体到哪些比赛/哪场 BO5/哪支队伍的路径会改变，避免只说“主动权”“复活甲”“晋级形势”这种空话。"
   ].join("\n");
@@ -2394,7 +2635,7 @@ async function getRuleResearch({ tournament, newsItems = [], refresh = false } =
     .sort((a, b) => b.score - a.score)
     .filter(uniqueEvidenceUrl)
     .slice(0, 10);
-  const evidence = await Promise.all(candidates.map(async (item) => {
+  const webEvidence = await Promise.all(candidates.map(async (item) => {
     const snippet = item.evidenceKind?.startsWith("tavily")
       ? cleanSearchSnippet(item.description, 900)
       : await fetchRuleEvidenceSnippet(item.url, item.description).catch(() => cleanSearchSnippet(item.description, 500));
@@ -2418,6 +2659,11 @@ async function getRuleResearch({ tournament, newsItems = [], refresh = false } =
       snippet
     };
   }));
+  const configuredEvidence = configuredRuleEvidence(tournament);
+  const evidence = [
+    ...configuredEvidence,
+    ...webEvidence.filter((item) => !configuredEvidence.some((configured) => configured.title === item.title))
+  ];
   const usableEvidence = evidence.filter((item) => item.usableForRules);
   const data = {
     source: "针对当前赛事动态检索的赛制、晋级与资格证据",
@@ -2436,6 +2682,29 @@ async function getRuleResearch({ tournament, newsItems = [], refresh = false } =
   };
   ruleResearchCache.set(cacheKey, { cachedAt: now, data });
   return data;
+}
+
+function configuredRuleEvidence(tournament) {
+  const stakes = Array.isArray(tournament.rules?.stakes) ? tournament.rules.stakes : [];
+  if (!stakes.length) return [];
+  return stakes.map((stake, index) => ({
+    title: stake.headline || `${tournament.name} 赛制权益 ${index + 1}`,
+    source: "项目赛制规则配置",
+    url: "",
+    publishedAt: null,
+    evidenceKind: "configured-rule",
+    sourceType: "official-rules",
+    confidence: "high",
+    scope: "current-event",
+    conflictsWithBracket: false,
+    usableForRules: true,
+    snippet: [
+      tournament.rules?.format || tournament.name,
+      stake.body,
+      stake.cardImpact,
+      Array.isArray(stake.chips) ? `关键词：${stake.chips.join("、")}` : ""
+    ].filter(Boolean).join(" ")
+  }));
 }
 
 async function fetchRuleSearchApiItems(tournament) {
@@ -2705,8 +2974,8 @@ function buildPredictionPrompt() {
     "只有 medium/low 可信度规则证据时要保留措辞，不得宣称官方已经确认。",
     "可以引用 webContext.relatedNews 的标题作为舆论/话题度参考；如果没有相关新闻，就明确说当前网页上下文不足。",
     "可以引用 rosterContext.teams[].retrievedEvidence 的标题/摘要作为当前阵容、首发或名单变动依据。",
-    "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进预测；如果没有可靠阵容，就分析队伍路径、赛果和赛程，不要点名。",
-    "如果数据不足，只能说“从当前赛程/签表/排名看”，并说明缺少哪些信息。"
+    "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进预测；如果没有可靠阵容，就分析队伍路径、赛果、赛程、状态和舆论，不要点名，也不要主动写阵容不足免责声明。",
+    "如果数据不足，只能说“从当前赛程/签表/排名看”。除非缺失信息直接影响你给出胜负倾向，否则不要在结尾堆砌不确定性。"
   ].join("\n");
 }
 
@@ -2715,7 +2984,7 @@ async function predictMatch(provider, tournament, analysis, match, newsItems, ro
   if (provider === "local") return local;
   const context = buildPredictionContext(tournament, analysis, match, newsItems, rosterData, ruleResearch);
   const llm = await callLlm(provider, buildPredictionPrompt(), context);
-  return llm ? llm.trim() : local;
+  return llm ? suppressRosterDisclaimers(llm.trim()) : local;
 }
 
 function predictMatchLocally(tournament, analysis, match) {
@@ -2836,6 +3105,69 @@ function normalizeLlmFocusStory(story) {
     ? story.chips.map((chip) => String(chip).trim()).filter(Boolean).slice(0, 4)
     : [];
   return { tone, headline, body, chips };
+}
+
+function fallbackLlmTextToAnalysis(text) {
+  const clean = sanitizeDisplayText(String(text || "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/^#+\s*/gm, "")
+    .trim());
+  if (looksLikeModelReasoning(clean)) return null;
+  if (clean.length < 80) return null;
+  const paragraphs = clean
+    .split(/\n{2,}|(?<=。)\s*(?=[一二三四五六七八九十\d][、.．]|为什么|双方|关键|结论|不确定)/)
+    .map((item) => item.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+  const summary = paragraphs.slice(0, 2).join("\n\n").slice(0, 420);
+  const headline = firstMeaningfulHeadline(paragraphs) || "AI 已生成赛区焦点";
+  const body = paragraphs.find((item) => item !== headline && item.length >= 35) || clean.slice(0, 220);
+  return {
+    summary,
+    focusStories: [{
+      tone: "hot",
+      headline: headline.slice(0, 42),
+      body: body.slice(0, 260),
+      chips: ["AI兜底", "深度分析"]
+    }]
+  };
+}
+
+function looksLikeModelReasoning(text) {
+  return /我们被要求|需要基于结构化数据|输出\s*JSON|focusStories|cardInsights|phaseView\.cards|evidenceIndexes|用户要求|任务要求/.test(String(text || ""));
+}
+
+function firstMeaningfulHeadline(paragraphs) {
+  return paragraphs
+    .map((item) => item.replace(/^【?一句话结论】?[：:]\s*/, "").trim())
+    .find((item) => item.length >= 8 && item.length <= 60 && !/[。！？!?]$/.test(item));
+}
+
+function suppressRosterDisclaimers(text) {
+  const rosterDisclaimer = /(?:阵容|选手名单|首发|英雄池|具体对位).{0,24}(?:不足|未提供|缺失|无法分析|无法判断)|(?:当前数据|当前上下文).{0,18}(?:未提供|没有).{0,24}(?:阵容|选手名单|首发|英雄池)|实际阵容可能影响战术走向/;
+  const lines = String(text || "").split(/\r?\n/);
+  const filtered = [];
+  let skippingUncertaintyBlock = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^#{1,6}\s*不确定性\s*$|^不确定性[：:]?\s*$/.test(trimmed)) {
+      skippingUncertaintyBlock = true;
+      filtered.push(line);
+      continue;
+    }
+    if (skippingUncertaintyBlock && /^#{1,6}\s+|^[\u4e00-\u9fa5A-Za-z0-9].{0,18}[：:]$/.test(trimmed) && !/^[-*•]\s+/.test(trimmed)) {
+      skippingUncertaintyBlock = false;
+    }
+    if (rosterDisclaimer.test(trimmed)) continue;
+    filtered.push(line);
+  }
+  return collapseEmptyMarkdownLines(filtered.join("\n"));
+}
+
+function collapseEmptyMarkdownLines(text) {
+  return String(text || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/(?:^|\n)(?:#+\s*)?不确定性[：:]?\s*(?=\n{0,2}(?:#+\s*)?(?:总结|结论)[：:]?)/g, "\n")
+    .trim();
 }
 
 function sanitizeDisplayText(value) {
@@ -4166,6 +4498,9 @@ async function rankNewsWithLlm(tournament, items) {
   const candidates = items.slice(0, 12);
   if (!candidates.length) return [];
   const provider = process.env.NEWS_RANK_PROVIDER || process.env.DEFAULT_LLM_PROVIDER || "deepseek";
+  if (provider === "local" || process.env.NEWS_RANK_WITH_LLM === "0") {
+    return diversifyNewsSources(candidates, 8);
+  }
   try {
     const context = JSON.stringify({
       tournament: tournament ? {
@@ -4601,12 +4936,13 @@ async function handleApi(req, res) {
     }
     const cacheKey = `${tournament.id}:${provider}`;
     const cached = analysisCache.get(cacheKey);
-    if (cached?.data?.analysis?.llmError) analysisCache.delete(cacheKey);
-    if (!refresh && cached && Date.now() - cached.cachedAt < ANALYSIS_CACHE_TTL_MS) {
-      if (!cached.data.analysis?.llmError) {
-        sendJson(res, 200, { ...cached.data, cached: true });
-        return;
-      }
+    const cachedAge = cached ? Date.now() - cached.cachedAt : Infinity;
+    const cacheTtl = cached?.data?.analysis?.llmError || cached?.data?.aiStatus === "failed"
+      ? FAILED_ANALYSIS_CACHE_TTL_MS
+      : ANALYSIS_CACHE_TTL_MS;
+    if (!refresh && cached && cachedAge < cacheTtl) {
+      sendJson(res, 200, { ...cached.data, cached: true });
+      return;
     }
     if (analysisPending.has(cacheKey)) {
       sendJson(res, 200, { ...(await analysisPending.get(cacheKey)), sharedRequest: true });
@@ -4624,10 +4960,18 @@ async function handleApi(req, res) {
         ]);
         roster = rosterResult.data || null;
         ruleResearch = ruleResult.data || null;
+        analysis.rosterStatus = rosterResult.timedOut
+          ? "timeout"
+          : rosterResult.error
+            ? "error"
+            : roster
+              ? "ready"
+              : "unavailable";
+        if (rosterResult.error) {
+          analysis.rosterError = rosterResult.error.message;
+        }
         analysis.researchWarnings = [
-          rosterResult.timedOut ? `阵容检索超过 ${Math.round(ROSTER_ANALYSIS_TIMEOUT_MS / 1000)} 秒，已先使用可用数据生成。` : "",
           ruleResult.timedOut ? `规则检索超过 ${Math.round(RULE_ANALYSIS_TIMEOUT_MS / 1000)} 秒，已先使用可用数据生成。` : "",
-          rosterResult.error ? `阵容检索失败：${rosterResult.error.message}` : "",
           ruleResult.error ? `规则检索失败：${ruleResult.error.message}` : ""
         ].filter(Boolean);
       }
@@ -4647,9 +4991,7 @@ async function handleApi(req, res) {
         aiStatus: provider === "local" ? "local" : analysis.aiEnhanced ? "ready" : "failed",
         updatedAt: new Date().toISOString()
       };
-      if (provider === "local" || analysis.aiEnhanced) {
-        analysisCache.set(cacheKey, { cachedAt: Date.now(), data: responseData });
-      }
+      analysisCache.set(cacheKey, { cachedAt: Date.now(), data: responseData });
       return responseData;
     })();
     analysisPending.set(cacheKey, pending);

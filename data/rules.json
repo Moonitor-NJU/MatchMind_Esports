@@ -133,15 +133,42 @@
         "stage": ["road to msi"]
       },
       "rules": {
-        "format": "LCK Road to MSI 资格赛路径",
+        "format": "LCK Road to MSI 阶梯资格赛：胜者组决赛胜者直接获得 MSI 一号种子，败者进入二号种子决胜战",
         "phase": "playoffs",
         "advanceSlots": 0,
         "eliminationSlots": 0,
         "labels": {
-          "final": "MSI 资格路径",
+          "final": "MSI 种子资格路径",
           "watch": "待战队伍"
         },
-        "tiebreakers": ["资格赛签表", "BO5 胜负关系", "官方晋级规则"]
+        "stakes": [
+          {
+            "id": "lck-road-msi-upper-final-first-seed",
+            "roundIncludes": ["upper bracket final"],
+            "status": "finished",
+            "headline": "{winner} 击败 {loser}，直接锁定 LCK 的 MSI 一号种子。",
+            "body": "{winner} 赢下胜者组决赛后已经获得 MSI 资格和一号种子；{loser} 不会被淘汰，而是进入二号种子决胜战，继续争夺另一张 MSI 门票。",
+            "cardImpact": "{winner} 已锁定 MSI 一号种子；{loser} 转入二号种子决胜战，仍有机会拿到 MSI 资格。",
+            "chips": ["MSI一号种子", "已锁定", "二号种子战"]
+          },
+          {
+            "id": "lck-road-msi-lower-final-second-seed",
+            "roundIncludes": ["lower bracket final"],
+            "headline": "二号种子决胜战：{left} vs {right} 的胜者获得 LCK 第二张 MSI 门票。",
+            "body": "这场不是总决赛，而是 LCK 第二张 MSI 门票的决胜战：胜者成为 MSI 二号种子，败者结束本阶段赛程。",
+            "cardImpact": "这场是 LCK MSI 二号种子决胜战：胜者获得第二张 MSI 门票，败者出局。",
+            "chips": ["MSI二号种子", "生死战", "资格决胜"]
+          },
+          {
+            "id": "lck-road-msi-lower-round-elimination",
+            "roundIncludes": ["lower bracket"],
+            "headline": "{winner} 继续冲击 MSI 二号种子，{loser} 被淘汰。",
+            "body": "{winner} 留在二号种子路径中继续前进；{loser} 输掉败者组 BO5 后结束本阶段赛程。",
+            "cardImpact": "{winner} 继续争夺 LCK 第二张 MSI 门票；{loser} 被淘汰。",
+            "chips": ["败者组", "淘汰", "二号种子路径"]
+          }
+        ],
+        "tiebreakers": ["阶梯资格赛签表", "胜者组决赛胜者锁定 MSI 一号种子", "二号种子决胜战胜者锁定 MSI 二号种子", "BO5 胜负关系", "官方晋级规则"]
       },
       "focus": {
         "playoffMode": "qualification_path",

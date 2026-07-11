@@ -32,17 +32,23 @@ const SYSTEM_PROMPT = [
   "分析晋级形势时必须同时考虑赛制 rules、官方排名、小分/局分和加赛规则；不确定时明确说明以官方公告为准。",
   "涉及季后赛轮次意义、淘汰、决赛、国际赛门票或种子时，必须优先依据 ruleResearch.evidence 和完整 phaseView.cards；不得把旧赛季规则或训练记忆当成当前规则。",
   "规则证据标记为 medium/low 时不得写成官方确认；多个规则来源冲突时必须指出冲突并保留不确定性。",
-  "严禁凭训练记忆补全当前选手阵容。只有 rosterContext.roster、rosterContext.retrievedEvidence 或 webContext.relatedNews 明确出现的选手名才可以提及；若当前 roster 与 retrievedEvidence 为空或来源不足，必须说阵容信息不足，不能套用历史阵容。",
+  "严禁凭训练记忆补全当前选手阵容。只有 rosterContext.roster、rosterContext.retrievedEvidence 或 webContext.relatedNews 明确出现的选手名才可以提及；若当前 roster 与 retrievedEvidence 为空或来源不足，默认不要谈选手、对位或英雄池，也不要主动写阵容不足免责声明。只有用户明确询问选手、对位、首发、阵容或英雄池时，才简短说明阵容证据不足。",
   "用中文，结论明确，适合网页展示。"
 ].join("");
 
 async function callLlm(provider, prompt, context) {
   const providerConfig = PROVIDERS[provider] || PROVIDERS.deepseek;
   const key = process.env[providerConfig.keyEnv];
-  if (!key) return null;
+  if (!key) {
+    throw new Error(`${providerConfig.keyEnv} is not set for provider ${provider}`);
+  }
 
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 28_000);
+  const timeoutMs = Number(
+    process.env[`${provider.toUpperCase()}_TIMEOUT_MS`] ||
+    process.env.LLM_TIMEOUT_MS ||
+    (provider === "qwen" ? 60_000 : 28_000)
+  );
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
@@ -56,7 +62,11 @@ async function callLlm(provider, prompt, context) {
       body: JSON.stringify({
         model: process.env[providerConfig.modelEnv] || providerConfig.defaultModel,
         temperature: 0.2,
-        max_tokens: Number(process.env.LLM_MAX_TOKENS || 2200),
+        max_tokens: Number(
+          process.env[`${provider.toUpperCase()}_MAX_TOKENS`] ||
+          process.env.LLM_MAX_TOKENS ||
+          2200
+        ),
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: `结构化数据：${context}\n\n任务：${prompt}` }
@@ -72,10 +82,28 @@ async function callLlm(provider, prompt, context) {
     clearTimeout(timer);
   }
   if (!response.ok) {
-    throw new Error(`LLM request failed: ${response.status}`);
+    const detail = await response.text().catch(() => "");
+    throw new Error(`LLM request failed: ${response.status}${detail ? ` ${detail.slice(0, 300)}` : ""}`);
   }
   const json = await response.json();
-  return json.choices?.[0]?.message?.content || null;
+  const choice = json.choices?.[0] || {};
+  const message = choice.message || {};
+  const content = [
+    message.content,
+    choice.text
+  ].find((value) => typeof value === "string" && value.trim());
+  if (!content) {
+    const detail = {
+      model: json.model || process.env[providerConfig.modelEnv] || providerConfig.defaultModel,
+      finishReason: choice.finish_reason || choice.finishReason || null,
+      choiceKeys: Object.keys(choice),
+      messageKeys: Object.keys(message),
+      hasReasoningContent: typeof message.reasoning_content === "string" && message.reasoning_content.trim().length > 0,
+      usage: json.usage || null
+    };
+    throw new Error(`LLM returned empty content: ${JSON.stringify(detail)}`);
+  }
+  return content;
 }
 
 module.exports = {

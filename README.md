@@ -115,7 +115,7 @@ REALTIME_PROVIDER=auto
 PANDASCORE_API_TOKEN=你的PandaScoreToken
 PANDASCORE_GAME=lol
 
-# 至少配置一个大模型；模型名称可按平台账号实际可用模型调整
+# 至少配置一个大模型；网页结构化 JSON 输出建议使用非推理模型
 DEEPSEEK_API_KEY=你的DeepSeekKey
 DEEPSEEK_MODEL=deepseek-chat
 
@@ -131,6 +131,8 @@ ZHIPU_MODEL=glm-4-flash
 # 新闻排序使用的模型提供商
 DEFAULT_LLM_PROVIDER=deepseek
 NEWS_RANK_PROVIDER=deepseek
+# 演示时建议关闭新闻排序模型调用，避免首页刷新消耗大量大模型请求
+NEWS_RANK_WITH_LLM=0
 ```
 
 只需要填写实际使用的平台。模型名必须是对应账户和 API 接入点当前支持的名称。
@@ -189,6 +191,11 @@ PANDASCORE_FOCUS=cn-major
 
 PANDASCORE_INCLUDE_KEYWORDS=lpl,lck,lec,lcs,lcp,ewc,msi,world championship
 PANDASCORE_EXCLUDE_KEYWORDS=academy,challengers,division 2
+
+# 免费/低额度 token 建议保持默认，避免队伍详情接口触发 429
+PANDASCORE_ENRICH_ROSTERS=0
+PANDASCORE_STANDINGS_LIMIT=8
+PANDASCORE_ROSTER_LIMIT=12
 ```
 
 ### 缓存与新闻
@@ -231,9 +238,14 @@ RULE_RESEARCH_CACHE_TTL_MS=21600000
 # 完整 AI 分析缓存，默认 10 分钟；重复打开或切回赛事时可直接复用
 ANALYSIS_CACHE_TTL_MS=600000
 
+# AI 分析失败后的短缓存，避免模型/格式错误时每次刷新都重复打 API
+FAILED_ANALYSIS_CACHE_TTL_MS=90000
+
 # 大模型请求超时和输出长度；演示时想更快可调低，想要更长分析可调高
 LLM_TIMEOUT_MS=28000
+QWEN_TIMEOUT_MS=60000
 LLM_MAX_TOKENS=2200
+QWEN_MAX_TOKENS=1600
 
 # 阵容/规则检索用于增强 AI 上下文；超时后页面会先展示可用分析，不会一直卡住
 ROSTER_ANALYSIS_TIMEOUT_MS=9000

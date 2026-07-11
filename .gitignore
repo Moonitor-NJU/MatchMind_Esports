@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .env
+data/realtime-snapshot.json
 node_modules/
 dist/
 coverage/

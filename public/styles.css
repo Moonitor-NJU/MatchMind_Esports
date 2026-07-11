@@ -248,9 +248,24 @@ button {
   box-shadow: var(--shadow);
 }
 
+.icon-button:disabled {
+  cursor: progress;
+  opacity: 0.76;
+}
+
 .icon-button span {
   display: block;
   font-size: 22px;
+}
+
+.icon-button.is-loading span {
+  animation: spinRefresh 0.85s linear infinite;
+}
+
+@keyframes spinRefresh {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .hero-band {
@@ -334,6 +349,51 @@ button {
 
 .agent-status .warn i {
   background: #f59e0b;
+}
+
+.agent-status .model-pill {
+  border-style: solid;
+}
+
+.model-notice {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.model-notice strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.model-notice span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.model-notice.ready {
+  border-color: rgba(15, 159, 135, 0.32);
+  background: #ecfdf5;
+}
+
+.model-notice.active {
+  border-color: rgba(37, 99, 235, 0.26);
+  background: #eff6ff;
+}
+
+.model-notice.warn {
+  border-color: rgba(245, 158, 11, 0.32);
+  background: #fffbeb;
+}
+
+.model-notice.local {
+  border-color: rgba(100, 116, 139, 0.24);
+  background: #f8fafc;
 }
 
 @keyframes pulseDot {

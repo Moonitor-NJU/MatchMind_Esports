@@ -11,7 +11,10 @@ const state = {
   filter: "all",
   provider: "deepseek",
   analysisRequestId: 0,
-  aiUpdating: false
+  aiUpdating: false,
+  aiStatus: "idle",
+  modelError: "",
+  refreshing: false
 };
 
 const els = {
@@ -156,6 +159,8 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
   });
   if (state.provider === "local") {
     state.aiUpdating = false;
+    state.aiStatus = "local";
+    state.modelError = "";
     setAgentStep("research", "idle");
     setAgentStep("model", "idle");
     renderHeader();
@@ -166,15 +171,29 @@ async function loadAnalysis(tournamentId = state.tournament?.id, options = {}) {
     provider: state.provider
   });
   if (options.refresh) params.set("refresh", "1");
-  const data = await requestJson(`/api/analyze?${params.toString()}`);
+  let data;
+  try {
+    data = await requestJson(`/api/analyze?${params.toString()}`);
+  } catch (error) {
+    if (requestId !== state.analysisRequestId) return;
+    state.aiUpdating = false;
+    state.aiStatus = "failed";
+    state.modelError = error.message;
+    setAgentStep("research", "warn");
+    setAgentStep("model", "warn");
+    renderHeader();
+    renderAnalysis();
+    els.heroSummary.textContent = `模型分析失败：${friendlyModelError(error.message)}`;
+    return;
+  }
   if (requestId !== state.analysisRequestId) return;
   state.aiUpdating = false;
   const hasResearchWarning = (data.analysis?.researchWarnings || []).length > 0;
   setAgentStep("research", hasResearchWarning ? "warn" : data.ruleResearch || data.roster ? "done" : "warn");
-  setAgentStep("model", data.analysis?.llmError ? "warn" : "done");
+  setAgentStep("model", data.aiStatus === "ready" && data.analysis?.aiEnhanced ? "done" : "warn");
   applyAnalysisData(data);
-  if (data.analysis?.llmError) {
-    els.heroSummary.textContent = `DeepSeek 暂不可用，当前展示本地分析：${friendlyModelError(data.analysis.llmError)}`;
+  if (data.analysis?.llmError || data.aiStatus !== "ready" || !data.analysis?.aiEnhanced) {
+    els.heroSummary.textContent = `完整 AI 分析暂未接管页面，当前展示本地分析：${friendlyModelError(data.analysis?.llmError || data.aiStatus || "AI did not return usable structured analysis")}`;
   }
   loadNews({ refresh: options.refresh }).catch(() => setAgentStep("news", "warn"));
 }
@@ -196,17 +215,67 @@ function setAgentStep(id, status) {
 function renderAgentStatus() {
   if (!els.agentStatus) return;
   const steps = state.agentSteps || {};
-  els.agentStatus.innerHTML = AGENT_STEPS.map((step) => {
+  const stepHtml = AGENT_STEPS.map((step) => {
     const status = steps[step.id] || "idle";
     return `<span class="${status}"><i></i>${step.label}</span>`;
   }).join("");
+  const modelClass = modelStatusClass();
+  const modelText = modelStatusText();
+  els.agentStatus.innerHTML = `${stepHtml}<span class="model-pill ${modelClass}" title="${escapeHtml(state.modelError || modelText)}"><i></i>${escapeHtml(modelText)}</span>`;
+}
+
+function setRefreshing(value, message = "") {
+  state.refreshing = value;
+  if (!els.refreshButton) return;
+  els.refreshButton.disabled = value;
+  els.refreshButton.classList.toggle("is-loading", value);
+  els.refreshButton.setAttribute("aria-busy", value ? "true" : "false");
+  els.refreshButton.title = value ? "正在刷新赛事、新闻和 AI 分析" : "刷新赛事、新闻和 AI 分析";
+  if (message) {
+    els.heroSummary.textContent = message;
+  }
+}
+
+function modelStatusClass() {
+  if (state.aiUpdating) return "active";
+  if (state.provider === "local" || state.aiStatus === "local") return "idle";
+  if (state.aiStatus === "ready") return "done";
+  if (state.aiStatus === "failed" || state.modelError) return "warn";
+  return "idle";
+}
+
+function modelStatusText() {
+  const providerName = {
+    deepseek: "DeepSeek",
+    qwen: "Qwen",
+    kimi: "Kimi",
+    zhipu: "智谱",
+    local: "本地"
+  }[state.provider] || state.provider;
+  if (state.aiUpdating) return `${providerName} 正在生成`;
+  if (state.provider === "local" || state.aiStatus === "local") return "本地规则引擎";
+  if (state.aiStatus === "ready") {
+    const length = state.analysis?.llmRawLength ? ` · ${state.analysis.llmRawLength}字` : "";
+    return `${providerName} 已生成${length}`;
+  }
+  if (state.aiStatus === "failed" || state.modelError || state.analysis?.llmError) {
+    return `${providerName} 未接管`;
+  }
+  return `${providerName} 待生成`;
 }
 
 function friendlyModelError(message) {
   const text = String(message || "");
   if (/\b401\b/.test(text)) return "API Key 无效或未正确加载";
+  if (/\b400\b/.test(text)) return "模型参数或模型名称不被当前平台接受，请检查 .env 里的模型名";
   if (/\b402\b/.test(text)) return "账户余额不足、额度耗尽或计费状态异常";
   if (/\b429\b/.test(text)) return "请求过于频繁或接口额度受限";
+  if (/API_KEY|is not set/i.test(text)) return "当前 Node 进程没有读到对应模型的 API Key，请重启服务并检查 .env";
+  if (/timed out|timeout|超时/i.test(text)) return "模型或联网检索耗时过长，已先展示本地分析";
+  if (/LLM returned empty content/i.test(text) && /finishReason["']?:["']?length/i.test(text) && /hasReasoningContent["']?:true/i.test(text)) {
+    return "当前模型把输出额度全部用在推理过程，没有生成最终正文；建议使用 deepseek-chat，或显著提高 LLM_MAX_TOKENS";
+  }
+  if (/non-JSON/i.test(text)) return "模型返回格式不符合页面结构化要求，已保留本地分析";
   return text || "未知接口错误";
 }
 
@@ -214,6 +283,8 @@ function applyAnalysisData(data, options = {}) {
   state.tournament = data.tournament;
   state.analysis = data.analysis;
   state.meta = data.meta || state.meta;
+  state.aiStatus = data.aiStatus || (data.analysis?.aiEnhanced ? "ready" : state.provider === "local" ? "local" : "failed");
+  state.modelError = data.analysis?.llmError || "";
   els.tournamentSelect.value = state.tournament.id;
   renderAll();
   if (options.switchingTournament) resetAgentForTournament();
@@ -221,6 +292,7 @@ function applyAnalysisData(data, options = {}) {
 
 function renderAll() {
   renderHeader();
+  renderAgentStatus();
   renderNews();
   renderFocus();
   renderSchedule();
@@ -461,7 +533,9 @@ function sourceSummary() {
   if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);
   if (meta.warning) parts.push(meta.warning);
   if (state.newsMeta?.warning) parts.push(`新闻源提示：${state.newsMeta.warning}`);
-  if (state.analysis?.researchWarnings?.length) parts.push(state.analysis.researchWarnings[0]);
+  const visibleResearchWarning = (state.analysis?.researchWarnings || [])
+    .find((warning) => warning && !/阵容检索|roster/i.test(warning));
+  if (visibleResearchWarning) parts.push(visibleResearchWarning);
   return parts.join(" · ");
 }
 
@@ -572,8 +646,12 @@ function renderAnalysis() {
   const lines = String(state.analysis.summary || "")
     .split("\n")
     .filter(Boolean);
+  const notice = modelNoticeHtml();
   if (state.analysis.llmError) {
-    lines.push(`模型接口暂不可用，已使用本地规则引擎回答。错误：${state.analysis.llmError}`);
+    lines.push(`完整 AI 分析暂未返回，已先展示本地规则引擎结果。原因：${friendlyModelError(state.analysis.llmError)}`);
+  }
+  if (state.modelError && !state.analysis.llmError) {
+    lines.push(`模型请求失败：${friendlyModelError(state.modelError)}`);
   }
   if (state.tournament.standingsWarning) {
     lines.push(state.tournament.standingsWarning);
@@ -584,7 +662,7 @@ function renderAnalysis() {
   if (state.meta?.warning) {
     lines.push(state.meta.warning);
   }
-  els.analysisText.innerHTML = renderMarkdown(lines.join("\n\n"));
+  els.analysisText.innerHTML = `${notice}${renderMarkdown(lines.join("\n\n"))}`;
   els.keyMatches.innerHTML = state.analysis.keyMatches.slice(0, 5).map((match) => `
     <div class="key-item">
       <strong>${match.left} vs ${match.right} · ${match.tag}</strong>
@@ -592,6 +670,31 @@ function renderAnalysis() {
       <p>${match.reason}</p>
     </div>
   `).join("") || `<div class="key-item"><strong>暂无关键比赛</strong><p>所有赛程结束后，系统会展示最终形势。</p></div>`;
+}
+
+function modelNoticeHtml() {
+  const providerName = {
+    deepseek: "DeepSeek",
+    qwen: "Qwen",
+    kimi: "Kimi",
+    zhipu: "智谱",
+    local: "本地规则引擎"
+  }[state.provider] || state.provider;
+  if (state.aiUpdating) {
+    return `<div class="model-notice active"><strong>${escapeHtml(providerName)} 正在生成</strong><span>当前先展示本地预览，模型返回后会自动替换焦点和关键比赛解读。</span></div>`;
+  }
+  if (state.provider === "local" || state.aiStatus === "local") {
+    return `<div class="model-notice local"><strong>当前使用本地规则引擎</strong><span>可在左侧切换 DeepSeek、Qwen、Kimi 或智谱生成更完整分析。</span></div>`;
+  }
+  if (state.aiStatus === "ready" && state.analysis?.aiEnhanced) {
+    const meta = [
+      state.analysis.llmRawLength ? `${state.analysis.llmRawLength} 字` : "",
+      state.analysis.aiAppliedFields ? `应用 ${state.analysis.aiAppliedFields} 处` : ""
+    ].filter(Boolean).join(" · ");
+    return `<div class="model-notice ready"><strong>${escapeHtml(providerName)} 已生成分析</strong><span>${escapeHtml(meta || "模型结果已接管当前页面。")}</span></div>`;
+  }
+  const reason = friendlyModelError(state.modelError || state.analysis?.llmError || state.aiStatus || "AI did not return usable structured analysis");
+  return `<div class="model-notice warn"><strong>${escapeHtml(providerName)} 暂未接管页面</strong><span>${escapeHtml(reason)}</span></div>`;
 }
 
 function renderScenarioOptions() {
@@ -807,10 +910,24 @@ els.providerSelect.addEventListener("change", (event) => {
   });
 });
 
-els.refreshButton.addEventListener("click", () => {
-  loadTournaments({ refresh: true }).catch((error) => {
-    els.heroSummary.textContent = `刷新失败：${error.message}`;
-  });
+els.refreshButton.addEventListener("click", async () => {
+  if (state.refreshing) return;
+  setRefreshing(true, "正在刷新赛事、新闻和 AI 分析...");
+  setAgentStep("schedule", "active");
+  setAgentStep("news", "active");
+  setAgentStep("research", state.provider === "local" ? "idle" : "active");
+  setAgentStep("model", state.provider === "local" ? "idle" : "active");
+  try {
+    await loadTournaments({ refresh: true });
+  } catch (error) {
+    els.heroSummary.textContent = `刷新失败：${friendlyModelError(error.message)}`;
+    setAgentStep("schedule", "warn");
+    setAgentStep("news", "warn");
+    setAgentStep("research", "warn");
+    setAgentStep("model", "warn");
+  } finally {
+    setRefreshing(false);
+  }
 });
 
 els.scheduleFilter.addEventListener("click", (event) => {

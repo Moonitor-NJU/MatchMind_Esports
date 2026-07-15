@@ -14,7 +14,11 @@ const state = {
   aiUpdating: false,
   aiStatus: "idle",
   modelError: "",
-  refreshing: false
+  refreshing: false,
+  aiEngineTab: "prediction",
+  activeNav: "#overview",
+  predictionCards: {},
+  predictionCardRequests: new Set()
 };
 
 const els = {
@@ -33,6 +37,8 @@ const els = {
   advanceSlotsLabel: document.querySelector("#advanceSlotsLabel"),
   newsStage: document.querySelector("#newsStage"),
   newsRail: document.querySelector("#newsRail"),
+  tickerText: document.querySelector("#tickerText"),
+  tournamentTabs: document.querySelector("#tournamentTabs"),
   focusStrip: document.querySelector("#focusStrip"),
   scheduleFilter: document.querySelector("#scheduleFilter"),
   matchList: document.querySelector("#matchList"),
@@ -46,6 +52,9 @@ const els = {
   scenarioMatch: document.querySelector("#scenarioMatch"),
   scoreButtons: document.querySelector("#scoreButtons"),
   scenarioResult: document.querySelector("#scenarioResult"),
+  aiEngineSummary: document.querySelector("#aiEngineSummary"),
+  aiEngineTitle: document.querySelector("#aiEngineTitle"),
+  aiEngineTabs: document.querySelector("#aiEngineTabs"),
   chatLog: document.querySelector("#chatLog"),
   chatForm: document.querySelector("#chatForm"),
   questionInput: document.querySelector("#questionInput"),
@@ -86,9 +95,10 @@ async function loadTournaments(options = {}) {
   state.tournaments = data.tournaments;
   state.meta = data.meta || null;
   state.newsIndex = 0;
-  els.tournamentSelect.innerHTML = state.tournaments
+  els.tournamentSelect.innerHTML = sortedVisibleTournaments()
     .map((item) => `<option value="${item.id}">${item.name}</option>`)
     .join("");
+  renderTournamentTabs();
   const preferredId = preferredTournamentId();
   await loadAnalysis(preferredId, options);
 }
@@ -97,17 +107,8 @@ function preferredTournamentId() {
   if (state.tournaments.some((item) => item.id === state.tournament?.id && !isDemoTournament(item))) {
     return state.tournament.id;
   }
-  const priority = [
-    /\bLPL\b/i,
-    /\bLCK\b/i,
-    /\bLEC\b/i,
-    /\bLCS\b/i,
-    /\bLCP\b/i
-  ];
-  for (const pattern of priority) {
-    const match = state.tournaments.find((item) => pattern.test(`${item.name || ""} ${item.stage || ""}`) && !isDemoTournament(item));
-    if (match) return match.id;
-  }
+  const firstRealTournament = sortedVisibleTournaments()[0];
+  if (firstRealTournament) return firstRealTournament.id;
   return state.tournaments.find((item) => !isDemoTournament(item))?.id || state.tournaments[0]?.id;
 }
 
@@ -291,7 +292,10 @@ function applyAnalysisData(data, options = {}) {
 }
 
 function renderAll() {
+  renderTournamentTabs();
   renderHeader();
+  renderAiEngineTabs();
+  renderNavState();
   renderAgentStatus();
   renderNews();
   renderFocus();
@@ -300,6 +304,52 @@ function renderAll() {
   renderAnalysis();
   renderScenarioOptions();
   renderQuickQuestions();
+}
+
+function renderAiEngineTabs() {
+  const tabs = els.aiEngineTabs;
+  const engine = tabs?.closest(".ai-engine");
+  const labels = {
+    prediction: "赛前预测",
+    summary: "AI 摘要",
+    chat: "AI 问答"
+  };
+  if (els.aiEngineTitle) {
+    els.aiEngineTitle.textContent = labels[state.aiEngineTab] || "AI Engine";
+  }
+  if (!tabs || !engine) {
+    renderNavState();
+    return;
+  }
+  engine.dataset.activeTab = state.aiEngineTab;
+  tabs.querySelectorAll("button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === state.aiEngineTab);
+  });
+  renderNavState();
+}
+
+function renderNavState() {
+  document.querySelectorAll(".nav a").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    const isEngineLink = href === "#aiEngine";
+    const isActive = isEngineLink
+      ? state.activeNav === "#aiEngine" && link.dataset.engineTab === state.aiEngineTab
+      : state.activeNav === href;
+    link.classList.toggle("active", isActive);
+  });
+}
+
+function scrollToSection(href) {
+  if (!href || href === "#overview") {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  const target = document.querySelector(href);
+  if (!target) return;
+  const stickyOffset = document.querySelector(".sidebar")?.getBoundingClientRect().height || 0;
+  const gap = 14;
+  const top = target.getBoundingClientRect().top + window.scrollY - stickyOffset - gap;
+  window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
 }
 
 function clearTournamentPanels() {
@@ -311,7 +361,10 @@ function clearTournamentPanels() {
   els.scenarioMatch.innerHTML = "";
   els.scoreButtons.innerHTML = "";
   els.scenarioResult.textContent = "正在切换赛事，预测面板会随新赛区刷新...";
+  if (els.aiEngineSummary) els.aiEngineSummary.textContent = "正在读取新赛区摘要...";
   els.quickQuestions.innerHTML = "";
+  state.predictionCards = {};
+  state.predictionCardRequests.clear();
 }
 
 function resetAgentForTournament() {
@@ -423,6 +476,7 @@ function renderHeader() {
   els.heroSummary.textContent = state.aiUpdating
     ? `${firstLine(state.analysis.summary)}（当前为本地预览，AI 正在联网更新...）`
     : firstLine(state.analysis.summary);
+  if (els.tickerText) els.tickerText.textContent = tickerSummary();
   els.liveCount.textContent = live;
   els.keyCount.textContent = state.analysis.keyMatches.filter((item) => item.importance !== "低").length;
   const isPlayoffs = state.tournament.rules.phase === "playoffs";
@@ -433,6 +487,79 @@ function renderHeader() {
     els.advanceSlots.textContent = state.tournament.rules.advanceSlots || 0;
     els.advanceSlotsLabel.textContent = "晋级名额";
   }
+}
+
+function tickerSummary() {
+  const keyMatch = state.analysis?.keyMatches?.find((item) => item.importance !== "低") || state.analysis?.keyMatches?.[0];
+  const focus = state.analysis?.focusStories?.[0];
+  const news = state.news?.[state.newsIndex];
+  if (state.aiUpdating && keyMatch) {
+    return `${keyMatch.left} vs ${keyMatch.right} 正在生成 AI 解读，当前先展示赛程与新闻预览。`;
+  }
+  if (focus?.headline) return `${focus.headline}  ·  ${firstLine(focus.body)}`;
+  if (keyMatch) return `${keyMatch.left} vs ${keyMatch.right} · ${keyMatch.tag} · ${keyMatch.reason}`;
+  if (news?.title) return `${news.source || "赛事新闻"} · ${news.title}`;
+  return firstLine(state.analysis?.summary || "正在读取赛事焦点...");
+}
+
+function renderTournamentTabs() {
+  if (!els.tournamentTabs) return;
+  const tournaments = sortedVisibleTournaments().slice(0, 12);
+  els.tournamentTabs.innerHTML = tournaments.map((item) => `
+    <button type="button" data-tournament-id="${escapeHtml(item.id)}" class="${item.id === state.tournament?.id ? "active" : ""}">
+      <span>${escapeHtml(shortTournamentName(item.name))}</span>
+    </button>
+  `).join("");
+}
+
+function sortedVisibleTournaments() {
+  return state.tournaments
+    .filter((item) => !isDemoTournament(item))
+    .slice()
+    .sort(compareTournamentTabs);
+}
+
+function compareTournamentTabs(a, b) {
+  const aKey = tournamentTabSortKey(a);
+  const bKey = tournamentTabSortKey(b);
+  for (let i = 0; i < aKey.length; i += 1) {
+    if (aKey[i] < bKey[i]) return -1;
+    if (aKey[i] > bKey[i]) return 1;
+  }
+  return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+}
+
+function tournamentTabSortKey(tournament) {
+  const text = `${tournament?.name || ""} ${tournament?.stage || ""}`;
+  const family = tournamentFamilyRank(text);
+  const group = tournamentGroupRank(text);
+  const phase = /playoff|淘汰|季后赛/i.test(text) ? 0 : /group|小组/i.test(text) ? 1 : 2;
+  const firstMatch = tournament?.matches?.[0]?.startsAt || "";
+  return [family, group, phase, firstMatch];
+}
+
+function tournamentFamilyRank(text) {
+  if (/mid-season|msi|季中/i.test(text)) return 0;
+  if (/esports world cup|ewc|电竞世界杯/i.test(text)) return 1;
+  if (/\bLCK\b/i.test(text)) return 2;
+  if (/\bLPL\b/i.test(text)) return 3;
+  if (/\bLEC\b/i.test(text)) return 4;
+  if (/\bLCS\b/i.test(text)) return 5;
+  return 9;
+}
+
+function tournamentGroupRank(text) {
+  const match = String(text || "").match(/group\s*([A-D])|([A-D])\s*组/i);
+  if (!match) return 0;
+  const letter = (match[1] || match[2] || "").toUpperCase();
+  return letter.charCodeAt(0) - "A".charCodeAt(0) + 1;
+}
+
+function shortTournamentName(name) {
+  return String(name || "赛事")
+    .replace(/League of Legends/i, "LOL")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function renderSourceDiagnostics() {
@@ -503,8 +630,36 @@ function sourceDiagnosticTitle(item) {
 }
 
 function renderFocus() {
+  const keyCards = (state.analysis.keyMatches || []).slice(0, 3);
+  const focusLabel = state.aiUpdating ? "AI 正在更新" : state.analysis.llmError ? "本地预览" : state.analysis.aiEnhanced ? "AI 关键比赛" : "关键比赛";
+  if (keyCards.length) {
+    els.focusStrip.innerHTML = keyCards.map((match, index) => {
+      const confidence = matchConfidence(match, index);
+      return `
+        <article class="focus-match-card ${index === 0 ? "is-primary" : ""}">
+          <div class="focus-match-top">
+            <span>${escapeHtml(match.tag || focusLabel)}</span>
+            <strong>${escapeHtml(match.importance || "中")}</strong>
+          </div>
+          <div class="focus-match-body">
+            <div>
+              <p>${escapeHtml(formatDate(match.startsAt))}</p>
+              <h3>${escapeHtml(match.left)} <em>vs</em> ${escapeHtml(match.right)}</h3>
+            </div>
+            <span class="focus-match-score">${match.status === "finished" ? "FT" : match.status === "live" ? "LIVE" : "待开"}</span>
+          </div>
+          <div class="focus-meter" aria-label="AI 关注度">
+            <span style="width:${confidence}%"></span>
+          </div>
+          <p class="focus-match-reason">${escapeHtml(match.reason || "等待 AI 结合赛程、新闻和规则补充解读。")}</p>
+          ${state.aiUpdating && index === 0 ? `<p class="ai-updating-line">正在调用 ${escapeHtml(state.provider)} 结合最新新闻、规则证据和赛程重写焦点...</p>` : ""}
+        </article>
+      `;
+    }).join("");
+    return;
+  }
+
   const stories = state.analysis.focusStories || [];
-  const focusLabel = state.aiUpdating ? "AI 正在更新" : state.analysis.llmError ? "本地兜底焦点" : state.analysis.aiEnhanced ? "AI 赛区焦点" : "赛区焦点";
   els.focusStrip.innerHTML = stories.map((story) => `
     <article class="focus-card ${story.tone || "watch"}">
       <div>
@@ -520,6 +675,14 @@ function renderFocus() {
   `).join("");
 }
 
+function matchConfidence(match, index) {
+  const text = `${match.left || ""}${match.right || ""}${match.tag || ""}${match.importance || ""}`;
+  let seed = 0;
+  for (let i = 0; i < text.length; i += 1) seed = (seed + text.charCodeAt(i) * (i + 3)) % 997;
+  const base = match.importance === "高" ? 68 : match.importance === "中" ? 58 : 48;
+  return Math.max(42, Math.min(88, base + (seed % 16) - index * 3));
+}
+
 function sourceSummary() {
   const meta = state.meta || {};
   const parts = [meta.source || state.tournament.source || "未知数据源"];
@@ -529,7 +692,7 @@ function sourceSummary() {
   if (meta.matchCount != null) parts.push(`${meta.matchCount} 场`);
   if (meta.queryCount != null) parts.push(`${meta.queryCount} 次查询`);
   if (state.tournament?.standingsSource === "official") parts.push("官方积分榜");
-  if (state.tournament?.standingsSource === "schedule-derived") parts.push("近期赛程推算榜");
+  if (state.tournament?.standingsSource === "schedule-derived") parts.push("赛程名单");
   if (meta.updatedAt) parts.push(`更新 ${formatDate(meta.updatedAt)}`);
   if (meta.warning) parts.push(meta.warning);
   if (state.newsMeta?.warning) parts.push(`新闻源提示：${state.newsMeta.warning}`);
@@ -582,21 +745,48 @@ function teamLine(team, score) {
 
 function renderPhase() {
   const phase = state.analysis.phaseView || { type: "standings", rows: state.analysis.teams };
-  els.phaseEyebrow.textContent = phase.type === "playoffs" ? "Bracket" : "Standings";
+  const hasOfficialStandings = state.tournament?.standingsSource === "official";
+  els.phaseEyebrow.textContent = phase.type === "playoffs" ? "Bracket" : hasOfficialStandings ? "Standings" : "Lineup";
   els.phaseTitle.textContent = phase.title || (phase.type === "playoffs" ? "晋级形势" : "积分榜");
   els.standingsTableWrap.hidden = phase.type === "playoffs";
   els.phaseCards.hidden = phase.type !== "playoffs";
   if (phase.type === "playoffs") {
     renderPlayoffPhase(phase);
   } else {
+    renderStandingsHeader(hasOfficialStandings);
     renderStandings();
   }
 }
 
+function renderStandingsHeader(hasOfficialStandings) {
+  const header = els.standingsTableWrap?.querySelector("thead tr");
+  if (!header) return;
+  header.innerHTML = hasOfficialStandings
+    ? `
+      <th>排名</th>
+      <th>队伍</th>
+      <th>赛区</th>
+      <th>战绩</th>
+      <th>小分</th>
+      <th>剩余</th>
+      <th>状态</th>
+    `
+    : `
+      <th>名单</th>
+      <th>队伍</th>
+      <th>赛区</th>
+      <th>当前战绩</th>
+      <th>小分</th>
+      <th>待赛</th>
+      <th>状态</th>
+    `;
+}
+
 function renderStandings() {
+  const hasOfficialStandings = state.tournament?.standingsSource === "official";
   els.standingsBody.innerHTML = state.analysis.teams.map((team) => `
     <tr>
-      <td><span class="rank">${team.rank}</span></td>
+      <td><span class="rank">${hasOfficialStandings ? team.rank : "参赛"}</span></td>
       <td><strong>${team.name}</strong></td>
       <td>${team.region}</td>
       <td>${team.wins}-${team.losses}</td>
@@ -663,6 +853,9 @@ function renderAnalysis() {
     lines.push(state.meta.warning);
   }
   els.analysisText.innerHTML = `${notice}${renderMarkdown(lines.join("\n\n"))}`;
+  if (els.aiEngineSummary) {
+    els.aiEngineSummary.innerHTML = renderEngineSummary(lines);
+  }
   els.keyMatches.innerHTML = state.analysis.keyMatches.slice(0, 5).map((match) => `
     <div class="key-item">
       <strong>${match.left} vs ${match.right} · ${match.tag}</strong>
@@ -698,16 +891,15 @@ function modelNoticeHtml() {
 }
 
 function renderScenarioOptions() {
-  const openMatches = state.tournament.matches.filter((match) => match.status !== "finished");
+  const openMatches = upcomingPredictionMatches();
   els.scenarioMatch.innerHTML = openMatches.map((match) => {
     const left = teamById(match.teams[0]).name;
     const right = teamById(match.teams[1]).name;
     return `<option value="${match.id}">${formatDate(match.startsAt)} · ${left} vs ${right} · BO${match.bestOf}</option>`;
   }).join("");
-  els.scenarioResult.textContent = openMatches.length
-    ? `已切换到 ${state.tournament.name}。选择未赛比赛后可做 AI 预测或比分推演。`
-    : `${state.tournament.name} 当前没有未赛比赛，预测面板会等待官方后续赛程更新。`;
+  els.scenarioResult.innerHTML = renderPredictionDashboard(openMatches);
   renderScenarioScoreButtons();
+  loadPredictionCards(openMatches);
 }
 
 function renderScenarioScoreButtons() {
@@ -716,17 +908,252 @@ function renderScenarioScoreButtons() {
     els.scoreButtons.innerHTML = "";
     return;
   }
-  const target = Math.floor(Number(match.bestOf || 3) / 2) + 1;
-  const scores = [];
-  for (let loser = 0; loser < target; loser += 1) scores.push({ left: target, right: loser });
-  for (let loser = target - 1; loser >= 0; loser -= 1) scores.push({ left: loser, right: target });
-  els.scoreButtons.innerHTML = [
-    `<button data-action="predict">AI 预测</button>`,
-    ...scores.map((score) => {
-      const side = score.left > score.right ? "左" : "右";
-      return `<button data-left="${score.left}" data-right="${score.right}">${side} ${score.left}:${score.right}</button>`;
-    })
-  ].join("");
+  els.scoreButtons.innerHTML = `<button data-action="predict">生成深度预测</button>`;
+}
+
+function upcomingPredictionMatches() {
+  const open = state.tournament.matches
+    .filter((match) => match.status !== "finished")
+    .slice()
+    .sort((a, b) => {
+      const aKey = keyMatchRank(a);
+      const bKey = keyMatchRank(b);
+      if (aKey !== bKey) return aKey - bKey;
+      return String(a.startsAt).localeCompare(String(b.startsAt));
+    });
+  return open.slice(0, 6);
+}
+
+function keyMatchRank(match) {
+  const label = matchLabel(match).toLowerCase();
+  const key = (state.analysis.keyMatches || []).find((item) => `${item.left} vs ${item.right}`.toLowerCase() === label || `${item.right} vs ${item.left}`.toLowerCase() === label);
+  if (!key) return 10;
+  return key.importance === "高" ? 0 : key.importance === "中" ? 1 : 2;
+}
+
+function renderPredictionDashboard(matches) {
+  if (!matches.length) {
+    return `<div class="prediction-empty"><strong>暂无待赛比赛</strong><p>${escapeHtml(state.tournament.name)} 当前没有未结束比赛，等官方更新下一轮赛程后会自动生成胜率预测。</p></div>`;
+  }
+  return `
+    <div class="prediction-grid">
+      ${matches.slice(0, 3).map((match, index) => renderPredictionCard(match, index)).join("")}
+    </div>
+  `;
+}
+
+function renderPredictionCard(match, index) {
+  const left = teamById(match.teams[0]);
+  const right = teamById(match.teams[1]);
+  const aiCard = state.predictionCards[match.id];
+  const prediction = aiCard || estimateMatchWinRate(match, index);
+  const isLoading = prediction.loading;
+  return `
+    <article class="prediction-card ${index === 0 ? "is-main" : ""} ${aiCard ? "is-ai" : ""}">
+      <div class="prediction-meta">
+        <span>${escapeHtml(formatDate(match.startsAt))}</span>
+        <strong>${isLoading ? "AI 更新中" : aiCard ? `AI · ${escapeHtml(aiCard.confidence || "中")}置信` : `BO${escapeHtml(match.bestOf || 3)}`}</strong>
+      </div>
+      <div class="prediction-teams">
+        <div>
+          <b>${escapeHtml(left.name)}</b>
+          <span>${prediction.leftWinRate ?? prediction.left}%</span>
+        </div>
+        <em>vs</em>
+        <div>
+          <b>${escapeHtml(right.name)}</b>
+          <span>${prediction.rightWinRate ?? prediction.right}%</span>
+        </div>
+      </div>
+      <div class="prediction-bar" aria-label="${escapeHtml(left.name)} 胜率 ${prediction.leftWinRate ?? prediction.left}%">
+        <span style="width:${prediction.leftWinRate ?? prediction.left}%"></span>
+      </div>
+      <p><strong>${escapeHtml(prediction.verdict)}</strong>${escapeHtml(prediction.reason)}</p>
+      <ul>
+        ${prediction.factors.map((factor) => `<li>${escapeHtml(factor)}</li>`).join("")}
+      </ul>
+    </article>
+  `;
+}
+
+function loadPredictionCards(matches) {
+  if (!matches.length || state.provider === "local") return;
+  const requestTournamentId = state.tournament?.id;
+  matches.slice(0, 3).forEach((match) => {
+    const key = `${requestTournamentId}:${state.provider}:${match.id}`;
+    if (state.predictionCardRequests.has(key) || state.predictionCards[match.id]) return;
+    state.predictionCardRequests.add(key);
+    state.predictionCards[match.id] = {
+      ...estimateMatchWinRate(match, 0),
+      loading: true,
+      verdict: "AI 正在更新胜率。",
+      reason: "正在结合近期赛果、阵容证据、相关新闻和赛程语境重新判断。"
+    };
+    requestJson("/api/prediction-card", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tournamentId: requestTournamentId,
+        matchId: match.id,
+        provider: state.provider
+      })
+    }).then((data) => {
+      if (state.tournament?.id !== requestTournamentId) return;
+      state.predictionCards[match.id] = data.card;
+      renderScenarioOptions();
+    }).catch((error) => {
+      if (state.tournament?.id !== requestTournamentId) return;
+      const local = estimateMatchWinRate(match, 0);
+      state.predictionCards[match.id] = {
+        ...local,
+        confidence: "低",
+        verdict: local.verdict,
+        reason: `${local.reason} AI 预测暂未返回：${friendlyModelError(error.message)}`
+      };
+      renderScenarioOptions();
+    });
+  });
+  els.scenarioResult.innerHTML = renderPredictionDashboard(matches);
+}
+
+function estimateMatchWinRate(match, index) {
+  const left = teamById(match.teams[0]);
+  const right = teamById(match.teams[1]);
+  const key = (state.analysis.keyMatches || []).find((item) => {
+    const a = `${item.left} ${item.right}`.toLowerCase();
+    const b = `${left.name} ${right.name}`.toLowerCase();
+    const c = `${right.name} ${left.name}`.toLowerCase();
+    return a === b || a === c;
+  });
+  const teams = state.analysis.teams || [];
+  const useRankSignal = state.tournament?.standingsSource === "official";
+  const leftRank = useRankSignal ? teams.find((team) => team.name === left.name)?.rank || 8 : 8;
+  const rightRank = useRankSignal ? teams.find((team) => team.name === right.name)?.rank || 8 : 8;
+  const leftRecent = recentMatchScore(left.name);
+  const rightRecent = recentMatchScore(right.name);
+  let leftRate = 50 + (rightRank - leftRank) * 2.4 + (leftRecent - rightRecent) * 4;
+  if (key?.importance === "高") leftRate += index === 0 ? 2 : 0;
+  if (/决赛|final/i.test(`${match.round || ""} ${match.stage || ""}`)) leftRate += 1;
+  leftRate = Math.round(Math.max(36, Math.min(64, leftRate)));
+  const rightRate = 100 - leftRate;
+  const favorite = leftRate >= rightRate ? left.name : right.name;
+  const underdog = leftRate >= rightRate ? right.name : left.name;
+  const favoriteRate = Math.max(leftRate, rightRate);
+  const gap = Math.abs(leftRate - rightRate);
+  const stage = predictionStageNarrative(match);
+  const formLine = predictionFormLine(left.name, right.name, leftRecent, rightRecent);
+  const pressureLine = predictionPressureLine(match, favorite, underdog, gap);
+  const verdict = gap <= 8
+    ? `${left.name} 和 ${right.name} 很接近。`
+    : `${favorite} 更被看好。`;
+  const reason = gap <= 8
+    ? `这不是碾压局，胜负更可能取决于前两局 BP 和谁先把节奏打稳。${stage}`
+    : `${favoriteRate}% 的倾向来自近期状态和赛程位置，而不是单纯看队名热度。${stage}`;
+  const factors = [
+    formLine,
+    pressureLine,
+    predictionWatchLine(key, match, left.name, right.name)
+  ];
+  return {
+    left: leftRate,
+    right: rightRate,
+    verdict,
+    reason,
+    factors
+  };
+}
+
+function predictionStageNarrative(match) {
+  const text = `${match.round || ""} ${match.stage || ""} ${match.bracket || ""}`;
+  if (/grand\s*final|总决赛|决赛/i.test(text)) {
+    return "这类比赛的意义很直接：谁赢谁把整个阶段收掉，输的一方没有太多解释空间。";
+  }
+  if (/lower/i.test(text) || /败者组/.test(text)) {
+    return "败者组的压力在于没有复活甲，任何一局节奏崩盘都会把整场 BO5 推到悬崖边。";
+  }
+  if (/upper/i.test(text) || /胜者组/.test(text)) {
+    return "胜者组的价值在于少打一轮、少暴露一轮准备，输掉则会把容错交出去。";
+  }
+  return "这场的核心不是账面排名，而是谁能在当前版本和 BO5 调整里先打出自己的节奏。";
+}
+
+function predictionFormLine(leftName, rightName, leftRecent, rightRecent) {
+  const leftText = trendText(leftRecent);
+  const rightText = trendText(rightRecent);
+  if (Math.abs(leftRecent - rightRecent) < 0.8) {
+    return `状态面：${leftName} 和 ${rightName} 最近都没有明显断档，开局资源团会很能说明问题。`;
+  }
+  const better = leftRecent > rightRecent ? leftName : rightName;
+  const worse = leftRecent > rightRecent ? rightName : leftName;
+  return `状态面：${better} 近期曲线更顺，${worse} 需要先把前期失误压下来。(${leftName} ${leftText}，${rightName} ${rightText})`;
+}
+
+function trendText(score) {
+  if (score >= 3) return "连胜感强";
+  if (score >= 1) return "走势偏热";
+  if (score > -1) return "状态中性";
+  if (score > -3) return "有波动";
+  return "压力偏大";
+}
+
+function predictionPressureLine(match, favorite, underdog, gap) {
+  const text = `${match.round || ""} ${match.stage || ""} ${match.bracket || ""}`;
+  if (/grand\s*final|总决赛|决赛/i.test(text)) {
+    return `比赛面：这是冠军局，${favorite} 不能只靠稳定运营，${underdog} 想翻盘就要把 BO5 拖成拉扯和临场调整。`;
+  }
+  if (/lower/i.test(text) || /败者组/.test(text)) {
+    return `比赛面：生死线会放大失误，${underdog} 如果前两局还找不到突破口，后面会越来越难打。`;
+  }
+  if (gap <= 8) {
+    return "比赛面：胜率差很小，谁能先拿到舒适阵容、谁能在中期少送一波，可能就够决定系列赛。";
+  }
+  return `比赛面：${favorite} 的优势在稳定性，${underdog} 的机会在抢开局节奏，不能等到中后期被慢慢磨死。`;
+}
+
+function predictionWatchLine(key, match, leftName, rightName) {
+  const cleaned = cleanPredictionReason(key?.reason);
+  if (cleaned) return `看点：${cleaned}`;
+  const round = match.round || match.stage || "这场 BO5";
+  return `看点：${round} 里最值得盯的是第一条先锋和前两条小龙，谁先拿到地图主动权，谁就更容易把系列赛带进自己的节奏。`;
+}
+
+function cleanPredictionReason(value) {
+  const text = firstLine(value || "")
+    .replace(/这场\s*[^，。；;]*?的胜者将[^。；;]*[。；;]?/g, "")
+    .replace(/败者将[^。；;]*[。；;]?/g, "")
+    .replace(/后续[^。；;]*官方[^。；;]*[。；;]?/g, "")
+    .replace(/等待官方[^。；;]*[。；;]?/g, "")
+    .replace(/以官方[^。；;]*为准[。；;]?/g, "")
+    .trim();
+  if (!text || text.length < 8) return "";
+  return text.slice(0, 80);
+}
+
+function recentMatchScore(teamName) {
+  const finished = state.tournament.matches
+    .filter((match) => match.status === "finished" && match.teams.some((teamId) => teamById(teamId).name === teamName))
+    .slice()
+    .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)))
+    .slice(0, 4);
+  return finished.reduce((score, match) => {
+    const idx = match.teams.findIndex((teamId) => teamById(teamId).name === teamName);
+    const leftScore = Number(match.result?.left ?? 0);
+    const rightScore = Number(match.result?.right ?? 0);
+    const won = idx === 0 ? leftScore > rightScore : rightScore > leftScore;
+    const diff = idx === 0 ? leftScore - rightScore : rightScore - leftScore;
+    return score + (won ? 1 : -1) + Math.max(-2, Math.min(2, diff)) * 0.35;
+  }, 0);
+}
+
+function renderEngineSummary(lines) {
+  const summary = lines.slice(0, 3).join("\n\n") || state.analysis.summary || "暂无 AI 摘要。";
+  const focus = (state.analysis.focusStories || []).slice(0, 2);
+  return `
+    <div class="engine-summary-copy">${renderMarkdown(summary)}</div>
+    ${focus.length ? `<div class="engine-summary-points">
+      ${focus.map((story) => `<p><strong>${escapeHtml(story.headline)}</strong><span>${escapeHtml(firstLine(story.body))}</span></p>`).join("")}
+    </div>` : ""}
+  `;
 }
 
 function renderQuickQuestions() {
@@ -903,8 +1330,43 @@ els.tournamentSelect.addEventListener("change", (event) => {
   });
 });
 
+if (els.tournamentTabs) {
+  els.tournamentTabs.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-tournament-id]");
+    if (!button || button.dataset.tournamentId === state.tournament?.id) return;
+    loadAnalysis(button.dataset.tournamentId).catch((error) => {
+      els.heroSummary.textContent = `加载失败：${error.message}`;
+    });
+  });
+}
+
+if (els.aiEngineTabs) {
+  els.aiEngineTabs.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-tab]");
+    if (!button) return;
+    state.activeNav = "#aiEngine";
+    state.aiEngineTab = button.dataset.tab;
+    renderAiEngineTabs();
+  });
+}
+
+document.querySelectorAll(".nav a").forEach((link) => {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    const href = link.getAttribute("href") || "#overview";
+    state.activeNav = href;
+    if (link.dataset.engineTab) {
+      state.aiEngineTab = link.dataset.engineTab;
+    }
+    renderAiEngineTabs();
+    scrollToSection(href);
+  });
+});
+
 els.providerSelect.addEventListener("change", (event) => {
   state.provider = event.target.value;
+  state.predictionCards = {};
+  state.predictionCardRequests.clear();
   loadAnalysis().catch((error) => {
     els.heroSummary.textContent = `模型分析失败：${error.message}`;
   });

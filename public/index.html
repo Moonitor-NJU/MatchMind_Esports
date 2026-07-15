@@ -27,10 +27,13 @@
           <option value="zhipu">智谱 GLM</option>
         </select>
         <nav class="nav">
+          <a href="#overview" class="active">总览</a>
+          <a href="#news">资讯</a>
           <a href="#schedule">赛程</a>
-          <a href="#standings">积分榜</a>
-          <a href="#analysis">晋级分析</a>
-          <a href="#agent">AI 问答</a>
+          <a href="#standings">晋级形势</a>
+          <a href="#aiEngine" data-engine-tab="prediction">AI预测</a>
+          <a href="#aiEngine" data-engine-tab="summary">AI摘要</a>
+          <a href="#aiEngine" data-engine-tab="chat">AI问答</a>
         </nav>
         <div class="source-box">
           <span>数据源</span>
@@ -50,7 +53,21 @@
           </button>
         </section>
 
-        <section class="hero-band">
+        <section class="ticker-bar" aria-label="赛事焦点快讯">
+          <span class="ticker-label">焦点</span>
+          <div class="ticker-track">
+            <span id="tickerText">正在读取赛事焦点...</span>
+          </div>
+        </section>
+
+        <div class="tournament-tabs" id="tournamentTabs" aria-label="赛事快速切换"></div>
+
+        <section id="news" class="news-showcase" aria-label="赛事新闻">
+          <div class="news-stage" id="newsStage"></div>
+          <div class="news-rail" id="newsRail"></div>
+        </section>
+
+        <section id="overview" class="hero-band">
           <div>
             <p class="eyebrow">实时判断</p>
             <h3 id="heroSummary">正在读取赛程和晋级规则。</h3>
@@ -63,104 +80,101 @@
           </div>
         </section>
 
-        <section class="news-showcase" aria-label="赛事新闻">
-          <div class="news-stage" id="newsStage"></div>
-          <div class="news-rail" id="newsRail"></div>
-        </section>
-
         <section class="focus-strip" id="focusStrip"></section>
 
-        <section id="schedule" class="section">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Schedule</p>
-              <h3>近期赛程</h3>
-            </div>
-            <div class="segmented" id="scheduleFilter">
-              <button data-filter="all" class="active">全部</button>
-              <button data-filter="live">进行中</button>
-              <button data-filter="scheduled">未开始</button>
-              <button data-filter="finished">已结束</button>
-            </div>
-          </div>
-          <div id="matchList" class="match-list"></div>
-        </section>
-
-        <section id="standings" class="section">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow" id="phaseEyebrow">Standings</p>
-              <h3 id="phaseTitle">积分榜</h3>
-            </div>
-          </div>
-          <div class="table-wrap" id="standingsTableWrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>排名</th>
-                  <th>队伍</th>
-                  <th>赛区</th>
-                  <th>战绩</th>
-                  <th>小分</th>
-                  <th>剩余</th>
-                  <th>状态</th>
-                </tr>
-              </thead>
-              <tbody id="standingsBody"></tbody>
-            </table>
-          </div>
-          <div id="phaseCards" class="phase-cards"></div>
-        </section>
-
-        <section id="analysis" class="section analysis-grid">
-          <div class="analysis-panel">
-            <div class="section-head compact">
-              <div>
-                <p class="eyebrow">AI Analysis</p>
-                <h3>晋级形势摘要</h3>
+        <div class="dashboard-grid">
+          <div class="dashboard-left">
+            <section id="schedule" class="section">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">Schedule</p>
+                  <h3>近期赛程</h3>
+                </div>
+                <div class="segmented" id="scheduleFilter">
+                  <button data-filter="all" class="active">全部</button>
+                  <button data-filter="live">进行中</button>
+                  <button data-filter="scheduled">未开始</button>
+                  <button data-filter="finished">已结束</button>
+                </div>
               </div>
-            </div>
-            <div id="analysisText" class="analysis-text"></div>
-          </div>
-          <div class="analysis-panel">
-            <div class="section-head compact">
-              <div>
-                <p class="eyebrow">Impact</p>
-                <h3>关键比赛</h3>
+              <div id="matchList" class="match-list"></div>
+            </section>
+
+            <section id="standings" class="section">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow" id="phaseEyebrow">Standings</p>
+                  <h3 id="phaseTitle">积分榜</h3>
+                </div>
               </div>
-            </div>
-            <div id="keyMatches" class="key-list"></div>
+              <div class="table-wrap" id="standingsTableWrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>排名</th>
+                      <th>队伍</th>
+                      <th>赛区</th>
+                      <th>战绩</th>
+                      <th>小分</th>
+                      <th>剩余</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="standingsBody"></tbody>
+                </table>
+              </div>
+              <div id="phaseCards" class="phase-cards"></div>
+            </section>
           </div>
-        </section>
 
-        <section class="section simulator">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Prediction</p>
-              <h3>赛前预测</h3>
-            </div>
-          </div>
-          <div class="simulator-controls">
-            <select id="scenarioMatch" class="light-select"></select>
-            <div class="score-buttons" id="scoreButtons"></div>
-          </div>
-          <div id="scenarioResult" class="scenario-result">选择一场未结束比赛，点击 AI 预测会结合当前赛程、签表和焦点信号给出赛前判断；比分按钮仍可做假设推演。</div>
-        </section>
+          <div class="dashboard-right">
+            <section id="aiEngine" class="section simulator ai-engine">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">AI Engine</p>
+                  <h3 id="aiEngineTitle">赛前预测</h3>
+                </div>
+                <div class="ai-engine-tabs" id="aiEngineTabs" aria-label="AI 分析模式">
+                  <button type="button" data-tab="prediction" class="active">赛前预测</button>
+                  <button type="button" data-tab="summary">AI 摘要</button>
+                  <button type="button" data-tab="chat">AI 问答</button>
+                </div>
+              </div>
+              <div class="ai-engine-grid">
+                <div class="ai-engine-pane prediction-pane">
+                  <div class="simulator-controls">
+                    <select id="scenarioMatch" class="light-select"></select>
+                    <div class="score-buttons" id="scoreButtons"></div>
+                  </div>
+                  <div id="scenarioResult" class="scenario-result">选择一场未结束比赛，点击 AI 预测会结合当前赛程、签表和焦点信号给出赛前判断。</div>
+                </div>
+                <div class="ai-engine-pane summary-pane">
+                  <p class="pane-label">AI 摘要</p>
+                  <div id="aiEngineSummary" class="ai-engine-summary">正在读取赛事摘要...</div>
+                </div>
+                <div class="ai-engine-pane chat-pane">
+                  <p class="pane-label">AI 问答</p>
+                  <div id="chatLog" class="chat-log"></div>
+                  <form id="chatForm" class="chat-form">
+                    <input id="questionInput" autocomplete="off" placeholder="问我关于赛事的任何问题...">
+                    <button type="submit">发送</button>
+                  </form>
+                  <div class="quick-questions" id="quickQuestions"></div>
+                </div>
+              </div>
+            </section>
 
-        <section id="agent" class="section agent">
-          <div class="section-head">
-            <div>
-              <p class="eyebrow">Agent</p>
-              <h3>问问晋级形势</h3>
-            </div>
+            <section id="analysis" class="section analysis-grid compact-analysis" aria-hidden="true">
+              <div class="analysis-panel">
+                <div id="analysisText" class="analysis-text"></div>
+              </div>
+              <div class="analysis-panel">
+                <div id="keyMatches" class="key-list"></div>
+              </div>
+            </section>
+
           </div>
-          <div id="chatLog" class="chat-log"></div>
-          <form id="chatForm" class="chat-form">
-            <input id="questionInput" autocomplete="off" placeholder="例如：T1 还能进前二吗？今晚哪场最值得看？">
-            <button type="submit">发送</button>
-          </form>
-          <div class="quick-questions" id="quickQuestions"></div>
-        </section>
+        </div>
       </main>
     </div>
     <script src="/app.js"></script>

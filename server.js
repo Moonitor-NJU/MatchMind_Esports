@@ -21,6 +21,7 @@ const LIVE_CACHE_TTL_MS = Number(process.env.LIVE_CACHE_TTL_MS || 5 * 60 * 1000)
 const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60 * 1000);
 const ROSTER_CACHE_TTL_MS = Number(process.env.ROSTER_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
 const RULE_RESEARCH_CACHE_TTL_MS = Number(process.env.RULE_RESEARCH_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
+const MATCHUP_RESEARCH_CACHE_TTL_MS = Number(process.env.MATCHUP_RESEARCH_CACHE_TTL_MS || 30 * 60 * 1000);
 const ANALYSIS_CACHE_TTL_MS = Number(process.env.ANALYSIS_CACHE_TTL_MS || 10 * 60 * 1000);
 const FAILED_ANALYSIS_CACHE_TTL_MS = Number(process.env.FAILED_ANALYSIS_CACHE_TTL_MS || 90 * 1000);
 const ROSTER_ANALYSIS_TIMEOUT_MS = Number(process.env.ROSTER_ANALYSIS_TIMEOUT_MS || 9_000);
@@ -31,6 +32,7 @@ const PANDASCORE_ROSTER_LIMIT = Number(process.env.PANDASCORE_ROSTER_LIMIT || 12
 const newsCache = new Map();
 const rosterCache = new Map();
 const ruleResearchCache = new Map();
+const matchupResearchCache = new Map();
 const analysisCache = new Map();
 const newsPending = new Map();
 const analysisPending = new Map();
@@ -649,6 +651,19 @@ function focusConfig(tournament) {
 
 function fallbackCompetitionRules(descriptor, teamCount) {
   const text = `${descriptor.league} ${descriptor.serie} ${descriptor.stage}`.toLowerCase();
+  if (/\bgroup\s*[a-d]\b|[a-d]\s*组/i.test(`${descriptor.stage} ${descriptor.name || ""}`)) {
+    return {
+      format: `${descriptor.league} ${descriptor.serie} 小组赛`,
+      phase: "regular",
+      advanceSlots: Math.min(2, Math.max(1, Math.ceil(teamCount / 2))),
+      eliminationSlots: 0,
+      labels: {
+        advance: "小组出线区",
+        watch: "小组观察区"
+      },
+      tiebreakers: ["小组胜负", "小分/局分", "直接交手", "官方加赛规则"]
+    };
+  }
   if (text.includes("lpl") && text.includes("playoff")) {
     return {
       format: "LPL Split 2 季后赛双败 BO5",
@@ -814,9 +829,20 @@ function comparePandaTournaments(a, b) {
   const byPriority = priority(a) - priority(b);
   if (byPriority) return byPriority;
 
+  const byGroup = tournamentGroupRank(a) - tournamentGroupRank(b);
+  if (byGroup) return byGroup;
+
   const aNext = nextTournamentTime(a);
   const bNext = nextTournamentTime(b);
   return aNext.localeCompare(bNext);
+}
+
+function tournamentGroupRank(tournament) {
+  const text = `${tournament?.name || ""} ${tournament?.stage || ""}`;
+  const match = text.match(/group\s*([A-D])|([A-D])\s*组/i);
+  if (!match) return 0;
+  const letter = (match[1] || match[2] || "").toUpperCase();
+  return letter.charCodeAt(0) - "A".charCodeAt(0) + 1;
 }
 
 function tournamentHasLiveMatch(tournament) {
@@ -1002,9 +1028,11 @@ function qualificationStatus(tournament, standings) {
     return standings.map((row) => ({
       ...row,
       maxWins: row.wins + row.remaining,
-      status: "近期赛程推算",
+      status: row.played ? "赛程内战绩" : "待首战",
       tone: "watch",
-      note: `${row.name} 的战绩来自当前接口返回的近期赛程，不等同于完整赛段官方积分榜。晋级结论需要结合官方积分榜和赛制。`
+      note: row.played
+        ? `${row.name} 的战绩只来自当前接口窗口内已结束比赛，不等同于完整赛段官方积分榜。`
+        : `${row.name} 目前还没有在当前赛程窗口内完成比赛，名单顺序不能当作官方排名。`
     }));
   }
 
@@ -1048,6 +1076,26 @@ function qualificationStatus(tournament, standings) {
 function keyMatches(tournament, standings) {
   if (tournament.rules?.phase === "playoffs") {
     return playoffKeyMatchesFromView(buildPlayoffView(tournament));
+  }
+  if (tournament.standingsSource !== "official") {
+    const stageLabel = /group|小组/i.test(`${tournament.stage || ""} ${tournament.rules?.format || ""}`) ? "小组赛" : "赛程窗口";
+    return tournament.matches
+      .filter((match) => match.status !== "finished")
+      .map((match) => {
+        const left = teamName(tournament, match.teams[0]);
+        const right = teamName(tournament, match.teams[1]);
+        const bestOf = match.bestOf ? `BO${match.bestOf}` : "对局";
+        return {
+          id: match.id,
+          startsAt: match.startsAt,
+          left,
+          right,
+          importance: match.status === "live" ? "高" : "中",
+          tag: `${stageLabel}焦点`,
+          reason: `${left} vs ${right} 是当前${stageLabel}内的${bestOf}。由于官方积分榜尚未形成，这场更适合看首战状态、版本理解和出线开局，而不是用 0-0 名单顺序判断排名。`
+        };
+      })
+      .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
   }
   const byId = new Map(standings.map((row) => [row.id, row]));
   const advanceSlots = tournament.rules.advanceSlots || Math.max(1, Math.ceil(standings.length / 2));
@@ -1097,7 +1145,7 @@ function localAnalysis(tournament, scenario = {}) {
   const teams = qualificationStatus(tournament, standings);
   const phaseView = buildPhaseView(tournament, teams);
   const matches = phaseView.type === "playoffs" ? playoffKeyMatchesFromView(phaseView) : keyMatches(tournament, standings);
-  const focusStories = buildFocusStories(tournament, teams, phaseView);
+  let focusStories = buildFocusStories(tournament, teams, phaseView);
   if (phaseView.type === "playoffs") {
     const focus = matches[0];
     const completed = phaseView.completedCount || 0;
@@ -1110,9 +1158,20 @@ function localAnalysis(tournament, scenario = {}) {
     ].join("\n");
     return { standings: [], teams: [], keyMatches: matches, focusStories, phaseView, summary };
   }
+  const focus = matches[0];
+  const hasOfficialStandings = tournament.standingsSource === "official";
+  if (!hasOfficialStandings) {
+    focusStories = scheduleOnlyFocusStories(tournament, matches);
+    const summary = [
+      `${tournament.name}。${focusStories[0]?.headline || "当前赛事还没有形成官方积分榜，页面展示的是赛程名单和待赛窗口。"}`,
+      `本阶段是${tournament.rules?.format || "小组/常规赛"}；在所有队伍 0-0 或官方 standings 缺失时，不能把名单顺序当成排名。`,
+      focus ? `下一场重点关注 ${focus.left} vs ${focus.right}：${focus.reason}` : "目前没有未结束比赛，等待官方赛程继续更新。",
+      "首轮阶段更应该关注开局状态、版本适应、BO 制长度和小组出线规则，等官方榜产生后再切换到排名判断。"
+    ].join("\n");
+    return { standings, teams, keyMatches: matches, focusStories, phaseView, summary };
+  }
   const safe = teams.filter((team) => team.tone === "safe").slice(0, 3).map((team) => team.name).join("、") || "暂无";
   const playIn = teams.filter((team) => team.status.includes("骑士") || team.status.includes("附加")).slice(0, 4).map((team) => team.name).join("、") || "暂无";
-  const focus = matches[0];
   const sourceText = tournament.standingsSource === "official"
     ? "当前积分榜来自 PandaScore 官方 standings 接口。"
     : "当前积分榜只根据接口返回的近期赛程推算，不代表完整赛段官方排名。";
@@ -1128,14 +1187,33 @@ function localAnalysis(tournament, scenario = {}) {
   return { standings, teams, keyMatches: matches, focusStories, phaseView, summary };
 }
 
+function scheduleOnlyFocusStories(tournament, matches) {
+  const first = matches[0];
+  if (!first) {
+    return [{
+      tone: "watch",
+      headline: "等待官方赛程继续更新。",
+      body: "当前没有可用的未结束比赛；在官方积分榜产生前，页面不会用名单顺序推断排名。",
+      chips: ["赛程名单", "等待开赛"]
+    }];
+  }
+  const phaseLabel = /group|小组/i.test(`${tournament.stage || ""} ${tournament.rules?.format || ""}`) ? "小组赛" : "当前赛程";
+  return [{
+    tone: first.importance === "高" ? "hot" : "watch",
+    headline: `${first.left} vs ${first.right} 是${phaseLabel}开局焦点。`,
+    body: `${first.reason} 等首轮赛果出现后，系统再把战绩、小分和出线压力纳入判断。`,
+    chips: [phaseLabel, `BO${(tournament.matches || []).find((match) => match.id === first.id)?.bestOf || ""}`.replace(/BO$/, "赛程"), "非排名判断"]
+  }];
+}
+
 function buildPhaseView(tournament, teams) {
   if (tournament.rules?.phase === "playoffs") {
     return buildPlayoffView(tournament);
   }
   return {
     type: "standings",
-    title: "积分榜",
-    subtitle: tournament.standingsSource === "official" ? "官方积分榜" : "近期赛程推算榜",
+    title: tournament.standingsSource === "official" ? "积分榜" : "赛程名单",
+    subtitle: tournament.standingsSource === "official" ? "官方积分榜" : "尚无官方积分榜，按当前赛程名单展示",
     rows: teams
   };
 }
@@ -2346,7 +2424,7 @@ function buildChatPrompt(question) {
   ].join("\n");
 }
 
-function buildPredictionContext(tournament, analysis, match, newsItems = [], rosterData = null, ruleResearch = null) {
+function buildPredictionContext(tournament, analysis, match, newsItems = [], rosterData = null, ruleResearch = null, matchupResearch = null) {
   const teams = teamMap(tournament);
   const left = teams.get(match.teams[0]);
   const right = teams.get(match.teams[1]);
@@ -2380,6 +2458,12 @@ function buildPredictionContext(tournament, analysis, match, newsItems = [], ros
       phaseImpact: phaseCard?.impact || null,
       stake: phaseCard?.stake || null
     },
+    matchupHistory: {
+      note: "仅包含当前数据窗口内能看到的近期比赛和交手；不要把它说成完整历史交锋。",
+      headToHead: headToHeadMatches(tournament, left?.id, right?.id),
+      leftRecent: recentTeamMatches(tournament, left?.id),
+      rightRecent: recentTeamMatches(tournament, right?.id)
+    },
     teams: {
       left: {
         profile: left,
@@ -2403,7 +2487,8 @@ function buildPredictionContext(tournament, analysis, match, newsItems = [], ros
       source: process.env.TAVILY_API_KEY
         ? "Tavily 实时网页搜索 + 项目抓取的 RSS/赛事新闻源。搜索结果会经过赛区、时效和相关性过滤。"
         : "项目抓取的 RSS/网页新闻源和页面新闻轮播；未配置搜索 API 时不等同于实时全网搜索。",
-      relatedNews
+      relatedNews,
+      matchupResearch: compactMatchupResearch(matchupResearch)
     },
     rosterContext: rosterContextForTournament({ teams: [left, right].filter(Boolean) }, rosterData),
     ruleResearch: ruleResearch || {
@@ -2411,6 +2496,47 @@ function buildPredictionContext(tournament, analysis, match, newsItems = [], ros
       evidence: []
     }
   });
+}
+
+function compactMatchForPrediction(tournament, match, perspectiveTeamId = null) {
+  if (!match) return null;
+  const left = teamName(tournament, match.teams?.[0]);
+  const right = teamName(tournament, match.teams?.[1]);
+  const result = match.result ? `${match.result.left}:${match.result.right}` : "未赛";
+  let perspective = null;
+  if (perspectiveTeamId && match.result) {
+    const idx = match.teams.findIndex((id) => id === perspectiveTeamId);
+    const won = idx === 0 ? match.result.left > match.result.right : match.result.right > match.result.left;
+    perspective = won ? "win" : "loss";
+  }
+  return {
+    startsAt: match.startsAt,
+    round: match.round,
+    bestOf: match.bestOf,
+    status: match.status,
+    left,
+    right,
+    score: result,
+    perspective
+  };
+}
+
+function recentTeamMatches(tournament, teamId, limit = 5) {
+  if (!teamId) return [];
+  return (tournament.matches || [])
+    .filter((match) => match.status === "finished" && (match.teams || []).includes(teamId))
+    .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)))
+    .slice(0, limit)
+    .map((match) => compactMatchForPrediction(tournament, match, teamId));
+}
+
+function headToHeadMatches(tournament, leftId, rightId, limit = 5) {
+  if (!leftId || !rightId) return [];
+  return (tournament.matches || [])
+    .filter((match) => match.status === "finished" && (match.teams || []).includes(leftId) && (match.teams || []).includes(rightId))
+    .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)))
+    .slice(0, limit)
+    .map((match) => compactMatchForPrediction(tournament, match));
 }
 
 function relatedNewsForMatch(newsItems, tournament, teams) {
@@ -2422,6 +2548,194 @@ function relatedNewsForMatch(newsItems, tournament, teams) {
       return { ...item, matchHit };
     })
     .sort((a, b) => Number(b.matchHit) - Number(a.matchHit));
+}
+
+async function getMatchupResearch({ tournament, match, newsItems = [], refresh = false } = {}) {
+  if (!tournament || !match) {
+    return { source: "no-match", evidence: [], updatedAt: new Date().toISOString() };
+  }
+  const teams = teamMap(tournament);
+  const left = teams.get(match.teams?.[0]);
+  const right = teams.get(match.teams?.[1]);
+  if (!left || !right) {
+    return { source: "missing-teams", evidence: [], updatedAt: new Date().toISOString() };
+  }
+  const cacheKey = `${tournament.id}:${match.id}:${left.name}:${right.name}`;
+  const cached = matchupResearchCache.get(cacheKey);
+  const now = Date.now();
+  if (!refresh && cached && now - cached.cachedAt < MATCHUP_RESEARCH_CACHE_TTL_MS) return cached.data;
+
+  const queries = matchupResearchQueries(tournament, match, left.name, right.name);
+  const [apiBatches, rssBatches] = await Promise.all([
+    Promise.allSettled(queries.slice(0, 7).map((query) => fetchMatchupSearchApiItems(query))),
+    Promise.allSettled(matchupResearchRssSources(queries.slice(0, 7), tournament).map((source) => fetchRosterSearchSource(source)))
+  ]);
+  const evidence = [
+    ...apiBatches.flatMap((batch) => batch.status === "fulfilled" ? batch.value : []),
+    ...rssBatches.flatMap((batch) => batch.status === "fulfilled" ? batch.value : []),
+    ...(newsItems || []).map((item) => ({ ...item, evidenceKind: "news-context" }))
+  ]
+    .map((item) => ({
+      ...item,
+      matchupScore: matchupEvidenceScore(item, tournament, left.name, right.name)
+    }))
+    .filter((item) => item.matchupScore > 0)
+    .sort((a, b) => b.matchupScore - a.matchupScore || Date.parse(b.publishedAt || 0) - Date.parse(a.publishedAt || 0))
+    .filter(uniqueEvidenceUrl)
+    .slice(0, 12)
+    .map((item) => ({
+      title: item.title,
+      source: item.source,
+      url: item.url,
+      publishedAt: item.publishedAt || null,
+      snippet: cleanSearchSnippet(item.description, 380),
+      evidenceKind: item.evidenceKind || "matchup-search",
+      sourceType: matchupSourceType(item),
+      score: Math.round(item.matchupScore)
+    }));
+  const data = {
+    source: process.env.TAVILY_API_KEY
+      ? "Tavily/Bing 单场赛前检索"
+      : process.env.SERPER_API_KEY
+        ? "Serper/Bing 单场赛前检索"
+        : "Bing RSS 单场赛前检索",
+    updatedAt: new Date().toISOString(),
+    queries,
+    evidence
+  };
+  matchupResearchCache.set(cacheKey, { cachedAt: now, data });
+  return data;
+}
+
+function compactMatchupResearch(matchupResearch) {
+  if (!matchupResearch) {
+    return {
+      source: "未执行单场外部检索",
+      evidence: []
+    };
+  }
+  return {
+    source: matchupResearch.source,
+    updatedAt: matchupResearch.updatedAt,
+    queries: (matchupResearch.queries || []).slice(0, 6),
+    evidence: (matchupResearch.evidence || []).slice(0, 10).map((item) => ({
+      title: item.title,
+      source: item.source,
+      url: item.url,
+      publishedAt: item.publishedAt,
+      sourceType: item.sourceType,
+      snippet: String(item.snippet || item.description || "").slice(0, 360)
+    }))
+  };
+}
+
+async function fetchMatchupSearchApiItems(query) {
+  if (process.env.TAVILY_API_KEY) {
+    return fetchTavilySearch(query, {
+      searchDepth: "advanced",
+      maxResults: 6,
+      evidenceKind: "matchup-tavily",
+      searchQuery: query
+    });
+  }
+  if (process.env.SERPER_API_KEY) return fetchSerperSearch(query);
+  return [];
+}
+
+function matchupResearchQueries(tournament, match, leftName, rightName) {
+  const year = new Date().getFullYear();
+  const event = compactEventSearchName(tournament);
+  const league = leagueSearchAlias(tournament);
+  const left = teamSearchName(leftName);
+  const right = teamSearchName(rightName);
+  const stage = tournament.rules?.phase === "playoffs" ? "淘汰赛" : "小组赛";
+  const bo = match.bestOf ? `BO${match.bestOf}` : "";
+  const base = `${year} ${event} ${left} vs ${right} ${bo} 英雄联盟`;
+  return [
+    `${base} 预测 胜率 前瞻`,
+    `${base} 赔率 odds prediction`,
+    `${base} 虎扑 赛前`,
+    `${base} PTT 閒聊 怎麼看`,
+    `${base} 近期状态 阵容 首发`,
+    `${base} 赛前分析 电竞`,
+    `${year} ${league} ${left} ${right} ${stage} 谁能赢`,
+    `${event} ${left} vs ${right} League of Legends preview prediction`,
+    `${left} ${right} 英雄联盟 交手 近期表现`
+  ].filter(uniqueLabel);
+}
+
+function compactEventSearchName(tournament) {
+  const raw = `${tournament.name || ""} ${tournament.stage || ""}`
+    .replace(/[·•]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/esports world cup/i.test(raw)) return "EWC Esports World Cup";
+  if (/mid-season invitational/i.test(raw)) return "MSI Mid-Season Invitational";
+  return raw || leagueLabelForNews(tournament);
+}
+
+function matchupResearchRssSources(queries, tournament) {
+  const league = leagueKeyFromTournament(tournament);
+  return queries.flatMap((query) => [
+    {
+      url: `https://cn.bing.com/search?q=${encodeURIComponent(query)}&format=rss&setlang=zh-cn&cc=CN`,
+      source: `Bing网页：${query}`,
+      league
+    },
+    {
+      url: `https://cn.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss&setlang=zh-cn&cc=CN`,
+      source: `Bing新闻：${query}`,
+      league
+    }
+  ]);
+}
+
+function matchupEvidenceScore(item, tournament, leftName, rightName) {
+  const text = `${item.title || ""} ${item.description || ""} ${item.url || ""}`;
+  const lower = text.toLowerCase();
+  let score = 0;
+  const leftHit = teamMentionedInText(leftName, text);
+  const rightHit = teamMentionedInText(rightName, text);
+  if (leftHit && rightHit) score += 42;
+  else if (leftHit || rightHit) score += 10;
+  if (mentionsCurrentEvent(text, tournament)) score += 22;
+  if (/预测|前瞻|赔率|胜率|谁能赢|怎么看|怎麼看|赛前|preview|prediction|odds|power ranking/i.test(text)) score += 18;
+  if (/近期|状态|阵容|首发|名单|交手|history|roster|lineup|form/i.test(text)) score += 10;
+  if (/hupu\.com|bbs\.hupu\.com|ptt|pttgamer|zhihu\.com|bilibili\.com|wanplus\.cn|scoregg\.com/i.test(lower)) score += 12;
+  if (/lpl\.qq\.com|lol\.qq\.com|lolesports\.com|liquipedia\.net/i.test(lower)) score += 10;
+  if (/英雄联盟|league of legends|lol/i.test(lower)) score += 8;
+  const published = Date.parse(item.publishedAt || "");
+  if (Number.isFinite(published)) {
+    const ageDays = (Date.now() - published) / 86400000;
+    if (ageDays <= 3) score += 16;
+    else if (ageDays <= 14) score += 10;
+    else if (ageDays <= 60) score += 4;
+    else score -= 10;
+  }
+  if (/材料|塑料|microsoft|office|生命周期|招聘|足球|篮球/i.test(text)) score -= 50;
+  return score;
+}
+
+function mentionsCurrentEvent(text, tournament) {
+  const value = String(text || "").toLowerCase();
+  const event = compactEventSearchName(tournament).toLowerCase();
+  const league = leagueLabelForNews(tournament).toLowerCase();
+  if (event && event.split(/\s+/).some((part) => part.length >= 3 && value.includes(part))) return true;
+  if (league && value.includes(league)) return true;
+  if (/esports world cup|ewc|电竞世界杯|msi|mid-season invitational|季中冠军赛/i.test(value)) {
+    return /esports world cup|ewc|电竞世界杯/i.test(event) || /mid-season invitational|msi|季中冠军赛/i.test(event);
+  }
+  return false;
+}
+
+function matchupSourceType(item) {
+  const text = `${item.title || ""} ${item.url || ""}`.toLowerCase();
+  if (/赔率|odds|bet|博彩/i.test(text)) return "odds-market";
+  if (/hupu\.com|bbs\.hupu\.com|ptt|pttgamer|nga\.cn|reddit\.com/i.test(text)) return "community-discussion";
+  if (/预测|前瞻|preview|prediction|怎么看|怎麼看|谁能赢/i.test(text)) return "preview-opinion";
+  if (/阵容|首发|roster|lineup/i.test(text)) return "roster-context";
+  if (/lolesports\.com|riotgames\.com|lpl\.qq\.com|lol\.qq\.com/i.test(text)) return "official-context";
+  return "news-context";
 }
 
 async function getRosterData({ tournament, teams = null, newsItems = [], refresh = false } = {}) {
@@ -2972,6 +3286,7 @@ function buildPredictionPrompt() {
     "如果 contextGuardrail 标明是季后赛，严禁用 0-0、排名第几、小分来当预测依据；必须说清楚这是 BO 几、胜者/败者路径如何变化。",
     "涉及晋级、淘汰、决赛、国际赛门票和种子时，只能使用 ruleResearch.evidence 中 usableForRules=true 的条目，并结合完整签表判断；sourceType=opinion-community 仅可描述舆论，conflictsWithBracket=true 必须忽略。证据不足时不要自行补全规则。",
     "只有 medium/low 可信度规则证据时要保留措辞，不得宣称官方已经确认。",
+    "赛前胜率和队伍状态优先参考 webContext.matchupResearch.evidence；其中的赔率、社区讨论和前瞻文章只能作为市场/舆论/分析线索，不要当作官方事实。",
     "可以引用 webContext.relatedNews 的标题作为舆论/话题度参考；如果没有相关新闻，就明确说当前网页上下文不足。",
     "可以引用 rosterContext.teams[].retrievedEvidence 的标题/摘要作为当前阵容、首发或名单变动依据。",
     "严禁凭记忆补当前选手阵容。只有 rosterContext 或 webContext.relatedNews 明确出现的选手名才可以写进预测；如果没有可靠阵容，就分析队伍路径、赛果、赛程、状态和舆论，不要点名，也不要主动写阵容不足免责声明。",
@@ -2979,12 +3294,159 @@ function buildPredictionPrompt() {
   ].join("\n");
 }
 
-async function predictMatch(provider, tournament, analysis, match, newsItems, rosterData = null, ruleResearch = null) {
+function buildPredictionCardPrompt() {
+  return [
+    "请为网页赛前预测卡生成结构化 JSON，不要输出 Markdown，不要输出解释文本。",
+    "必须返回：{\"leftWinRate\":整数0-100,\"rightWinRate\":整数0-100,\"verdict\":\"一句话结论\",\"reason\":\"一到两句核心理由\",\"factors\":[\"要点1\",\"要点2\",\"要点3\"],\"confidence\":\"低|中|高\"}。",
+    "leftWinRate + rightWinRate 必须等于 100；除非双方证据真的完全对称，否则不要写 51:49 或 50:50。低置信度也要给出一个有解释的倾向。",
+    "最优先使用 webContext.matchupResearch.evidence：其中可能包含赔率、虎扑/PTT/知乎讨论、赛前前瞻、近期表现、阵容和媒体评价。其次使用 matchupHistory、webContext.relatedNews、rosterContext、audienceSignals、standings/phaseView 和 ruleResearch。",
+    "如果 matchupResearch 里有 odds-market、community-discussion、preview-opinion 或 roster-context，要把它们转化为胜率理由：例如外界分歧、赔率均势、近期被翻盘、国际赛首秀、状态起伏、赛区对抗、BO1 偶然性。",
+    "reason 要像电竞赛前栏目，不要像数据字段复述。可以写“AL 经验略占优但状态成谜”“DK 年轻阵容上限高但中期决策不稳”这种判断，但必须来自上下文证据或用谨慎措辞。",
+    "严禁凭记忆编造当前阵容、历史交锋、赔率或训练赛；如果 rosterContext 没有可靠选手证据，就不要点名选手。",
+    "不要出现“当前数据未提供阵容”“无法分析英雄池”“无历史交手记录导致无法判断”这类免责声明；证据不足时自然写成“这更像临场状态/BP 决定的比赛”。",
+    "factors 必须是具体看点，不要写“状态面”“比赛面”这种标题式空话。避免机械话术，比如“排名第几”“胜者进入下一轮”“名单顺序”。"
+  ].join("\n");
+}
+
+async function predictMatch(provider, tournament, analysis, match, newsItems, rosterData = null, ruleResearch = null, matchupResearch = null) {
   const local = predictMatchLocally(tournament, analysis, match);
   if (provider === "local") return local;
-  const context = buildPredictionContext(tournament, analysis, match, newsItems, rosterData, ruleResearch);
+  const context = buildPredictionContext(tournament, analysis, match, newsItems, rosterData, ruleResearch, matchupResearch);
   const llm = await callLlm(provider, buildPredictionPrompt(), context);
   return llm ? suppressRosterDisclaimers(llm.trim()) : local;
+}
+
+async function predictMatchCard(provider, tournament, analysis, match, newsItems, rosterData = null, ruleResearch = null, matchupResearch = null) {
+  const local = predictMatchCardLocally(tournament, analysis, match, newsItems, matchupResearch);
+  if (provider === "local") return local;
+  const context = buildPredictionContext(tournament, analysis, match, newsItems, rosterData, ruleResearch, matchupResearch);
+  const llm = await callLlm(provider, buildPredictionCardPrompt(), context);
+  const parsed = parseJsonFromLlm(llm);
+  const normalized = normalizePredictionCard(parsed, tournament, match);
+  return normalized || local;
+}
+
+function predictMatchCardLocally(tournament, analysis, match, newsItems = [], matchupResearch = null) {
+  const teams = teamMap(tournament);
+  const left = teams.get(match.teams[0]);
+  const right = teams.get(match.teams[1]);
+  const leftRecent = recentTeamMatches(tournament, left?.id, 4);
+  const rightRecent = recentTeamMatches(tournament, right?.id, 4);
+  const h2h = headToHeadMatches(tournament, left?.id, right?.id, 3);
+  const leftRecentScore = localRecentScore(leftRecent);
+  const rightRecentScore = localRecentScore(rightRecent);
+  const leftNews = teamNewsScore(newsItems, left?.name);
+  const rightNews = teamNewsScore(newsItems, right?.name);
+  const leftResearch = teamNewsScore(matchupResearch?.evidence || [], left?.name);
+  const rightResearch = teamNewsScore(matchupResearch?.evidence || [], right?.name);
+  const leftHeat = audienceProfile(left?.name).heat;
+  const rightHeat = audienceProfile(right?.name).heat;
+  const standingsById = new Map((analysis.teams || []).map((team) => [team.id, team]));
+  const useRank = tournament.standingsSource === "official" && analysis.phaseView?.type !== "playoffs";
+  const leftRank = standingsById.get(left?.id)?.rank || 8;
+  const rightRank = standingsById.get(right?.id)?.rank || 8;
+  let leftScore = (leftRecentScore - rightRecentScore) * 7 + (leftNews - rightNews) * 2 + (leftResearch - rightResearch) * 2.8 + (leftHeat - rightHeat) * 0.18;
+  if (useRank) leftScore += (rightRank - leftRank) * 2.5;
+  if (analysis.phaseView?.type === "playoffs") {
+    const card = (analysis.phaseView.cards || []).find((item) => item.id === match.id);
+    const leftPath = buildPlayoffTeamPaths(analysis.phaseView).find((path) => path.team === left?.name);
+    const rightPath = buildPlayoffTeamPaths(analysis.phaseView).find((path) => path.team === right?.name);
+    leftScore += (playoffPathMomentum(leftPath) - playoffPathMomentum(rightPath)) * 7;
+    if (/决赛|final/i.test(`${card?.bracket || ""} ${match.round || ""}`)) leftScore += 1;
+  }
+  const leftWinRate = clampInt(Math.round(50 + leftScore), 35, 65);
+  const rightWinRate = 100 - leftWinRate;
+  const favorite = leftWinRate >= rightWinRate ? left : right;
+  const underdog = favorite === left ? right : left;
+  const gap = Math.abs(leftWinRate - rightWinRate);
+  const confidence = gap >= 18 ? "高" : gap >= 9 ? "中" : "低";
+  const newsLine = topTeamNewsTitle(newsItems, [left?.name, right?.name]);
+  const researchLine = topTeamResearchTitle(matchupResearch?.evidence || [], [left?.name, right?.name]);
+  const h2hLine = h2h.length
+    ? `当前数据窗口内两队有 ${h2h.length} 场直接交手可参考，最近一场是 ${h2h[0].left} ${h2h[0].score} ${h2h[0].right}。`
+    : researchLine
+      ? `赛前外部信息更有参考价值：${researchLine}`
+      : "这更像看临场 BP 和首局执行的比赛，胜率不宜拉得太开。";
+  return {
+    leftWinRate,
+    rightWinRate,
+    verdict: gap <= 6 ? `${left?.name} 和 ${right?.name} 接近五五开。` : `${favorite?.name} 略占上风。`,
+    reason: `${gap <= 6 ? "这场不是硬实力碾压局" : `${favorite?.name} 的胜面更清晰`}，主要看首局 BP、资源团和谁能把比赛带进自己熟悉的节奏。`,
+    factors: [
+      h2hLine,
+      `${favorite?.name} 的胜面来自近期状态、舆论评价和赛程位置的综合倾向，${underdog?.name} 仍有靠开局节奏改写走向的空间。`,
+      newsLine ? `相关新闻/舆论线索：${newsLine}` : "新闻侧暂时没有强烈单边风向，胜率不会拉得太开。"
+    ],
+    confidence
+  };
+}
+
+function normalizePredictionCard(value, tournament, match) {
+  if (!value || typeof value !== "object") return null;
+  let leftWinRate = clampInt(value.leftWinRate ?? value.left ?? value.leftRate, 5, 95);
+  let rightWinRate = clampInt(value.rightWinRate ?? value.right ?? value.rightRate, 5, 95);
+  if (!Number.isFinite(leftWinRate) || !Number.isFinite(rightWinRate)) return null;
+  const total = leftWinRate + rightWinRate;
+  if (total !== 100) {
+    leftWinRate = clampInt(Math.round((leftWinRate / Math.max(1, total)) * 100), 5, 95);
+    rightWinRate = 100 - leftWinRate;
+  }
+  const teams = teamMap(tournament);
+  const left = teams.get(match.teams[0])?.name || "左侧队伍";
+  const right = teams.get(match.teams[1])?.name || "右侧队伍";
+  const verdict = sanitizeDisplayText(value.verdict || (leftWinRate >= rightWinRate ? `${left} 更被看好。` : `${right} 更被看好。`)).slice(0, 80);
+  const reason = sanitizeDisplayText(value.reason || "模型综合赛程、新闻和当前数据给出这组胜率。").slice(0, 180);
+  const factors = Array.isArray(value.factors) ? value.factors : [];
+  return {
+    leftWinRate,
+    rightWinRate,
+    verdict,
+    reason,
+    factors: factors.map((item) => sanitizeDisplayText(item).slice(0, 120)).filter(Boolean).slice(0, 4),
+    confidence: ["低", "中", "高"].includes(value.confidence) ? value.confidence : "中"
+  };
+}
+
+function clampInt(value, min, max) {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) return NaN;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function localRecentScore(matches) {
+  return (matches || []).reduce((score, match) => score + (match.perspective === "win" ? 1 : -1), 0);
+}
+
+function teamNewsScore(newsItems, teamNameValue) {
+  if (!teamNameValue) return 0;
+  return (newsItems || []).reduce((score, item) => {
+    const text = `${item.title || ""} ${item.description || ""}`;
+    return score + (teamMentionedInText(teamNameValue, text) ? 1 : 0);
+  }, 0);
+}
+
+function topTeamNewsTitle(newsItems, teamNames) {
+  const hit = (newsItems || []).find((item) => {
+    const text = `${item.title || ""} ${item.description || ""}`;
+    return teamNames.some((name) => name && teamMentionedInText(name, text));
+  });
+  return hit?.title || "";
+}
+
+function topTeamResearchTitle(items, teamNames) {
+  const hit = (items || []).find((item) => {
+    const text = `${item.title || ""} ${item.snippet || ""} ${item.description || ""}`;
+    return teamNames.some((name) => name && teamMentionedInText(name, text));
+  });
+  if (!hit) return "";
+  const sourceType = hit.sourceType === "odds-market"
+    ? "赔率/市场"
+    : hit.sourceType === "community-discussion"
+      ? "社区讨论"
+      : hit.sourceType === "preview-opinion"
+        ? "赛前前瞻"
+        : hit.source || "外部资料";
+  return `${sourceType}提到「${hit.title}」`;
 }
 
 function predictMatchLocally(tournament, analysis, match) {
@@ -5046,19 +5508,58 @@ async function handleApi(req, res) {
     }
     const provider = body.provider || "local";
     const predictionTeams = (match.teams || []).map((id) => tournament.teams.find((team) => team.id === id)).filter(Boolean);
-    const roster = provider === "local"
-      ? null
-      : await getRosterData({ tournament, teams: predictionTeams, newsItems: news.items }).catch(() => null);
-    const ruleResearch = provider === "local" ? null : await getRuleResearch({ tournament, newsItems: news.items }).catch(() => null);
+    const [roster, ruleResearch, matchupResearch] = provider === "local"
+      ? [null, null, null]
+      : await Promise.all([
+          getRosterData({ tournament, teams: predictionTeams, newsItems: news.items }).catch(() => null),
+          getRuleResearch({ tournament, newsItems: news.items }).catch(() => null),
+          getMatchupResearch({ tournament, match, newsItems: news.items }).catch(() => null)
+        ]);
     let prediction = predictMatchLocally(tournament, analysis, match);
     let llmError = null;
     try {
-      prediction = await predictMatch(provider, tournament, analysis, match, news.items, roster, ruleResearch);
+      prediction = await predictMatch(provider, tournament, analysis, match, news.items, roster, ruleResearch, matchupResearch);
     } catch (error) {
       llmError = error.message;
       prediction += `\n\n模型接口暂不可用，已使用本地预测。错误：${error.message}`;
     }
-    sendJson(res, 200, { prediction, match, analysis, roster, ruleResearch, llmError, meta: data.meta });
+    sendJson(res, 200, { prediction, match, analysis, roster, ruleResearch, matchupResearch, llmError, meta: data.meta });
+    return;
+  }
+
+  if (url.pathname === "/api/prediction-card" && req.method === "POST") {
+    const body = await readBody(req);
+    const data = await getTournamentData();
+    const tournament = getTournamentFromData(data, body.tournamentId);
+    const analysis = localAnalysis(tournament);
+    const news = await getNewsData({ tournament }).catch(() => ({ items: [] }));
+    enrichAnalysisWithAudienceFocus(tournament, analysis, news.items);
+    const match = tournament.matches.find((item) => item.id === body.matchId);
+    if (!match) {
+      sendJson(res, 404, { error: "Match not found" });
+      return;
+    }
+    if (match.status === "finished") {
+      sendJson(res, 400, { error: "Only unfinished matches can be predicted" });
+      return;
+    }
+    const provider = body.provider || "local";
+    const predictionTeams = (match.teams || []).map((id) => tournament.teams.find((team) => team.id === id)).filter(Boolean);
+    const [roster, ruleResearch, matchupResearch] = provider === "local"
+      ? [null, null, null]
+      : await Promise.all([
+          getRosterData({ tournament, teams: predictionTeams, newsItems: news.items }).catch(() => null),
+          getRuleResearch({ tournament, newsItems: news.items }).catch(() => null),
+          getMatchupResearch({ tournament, match, newsItems: news.items }).catch(() => null)
+        ]);
+    let card = predictMatchCardLocally(tournament, analysis, match, news.items, matchupResearch);
+    let llmError = null;
+    try {
+      card = await predictMatchCard(provider, tournament, analysis, match, news.items, roster, ruleResearch, matchupResearch);
+    } catch (error) {
+      llmError = error.message;
+    }
+    sendJson(res, 200, { card, match, roster, ruleResearch, matchupResearch, llmError, meta: data.meta });
     return;
   }
 
